@@ -221,7 +221,8 @@ func getGstring(n int) string {
     return gstring
 }
 
-func (node *Node) sendPullReqs() {
+func (node *Node) sendPullReqs() map[string][]int {
+    polls := make(map[string][]int)
     for _, s_x := range node.setVal {
         rsx := getGstring(len(node.list))
         pollList := getPollList(rsx, node.addr.Port, node.list)
@@ -230,10 +231,12 @@ func (node *Node) sendPullReqs() {
         msgPull := "PULL:" + node.name + ":" + s_x + ":" + rsx
         node.selectiveBroadcast(msgPoll, pollList)
         node.selectiveBroadcast(msgPull, pullQuorum)
+        polls[s_x] = pollList
     }
+    return polls
 }
 
-func (node *Node) routingPullReqs(c chan PullInfo) {
+func (node *Node) routingPullReqs(c chan PullInfo, ansChan chan PullInfo) {
     //pulls := node.getPullReqs()
     counter := make([]Counter, 0)
     for {
@@ -246,6 +249,9 @@ func (node *Node) routingPullReqs(c chan PullInfo) {
                 if (arr[0] == "PULL") || (arr[0] == "POLL") {
                     pullReq = PullInfo{typ: arr[0], from: port, origFrom: port, gstr: arr[2], randstr: arr[3]}
                 }
+                if (arr[0] == "ANSWER") {
+                    pullReq = PullInfo{typ: arr[0], from: port, gstr: arr[2]}
+                }
                 if arr[0] == "POLL1" {
                     orig, err := strconv.Atoi(arr[2])
                     checkErr(err)
@@ -257,6 +263,7 @@ func (node *Node) routingPullReqs(c chan PullInfo) {
                     checkErr(err)
                     pullReq = PullInfo{typ: arr[0], from: port, origFrom: orig, gstr: arr[3], randstr: arr[4]}
                 }
+                fmt.Println(pullReq)
                 switch {
                     case pullReq.typ == "PULL" :
                         pullQuorum := getPullQuorum(pullReq.gstr, pullReq.from, node.list)
@@ -288,13 +295,15 @@ func (node *Node) routingPullReqs(c chan PullInfo) {
                                 counter = append(counter, newCount)
                                 index = len(counter)-1
                             }
-                            if counter[index].count > len(pullQuoX)/2 {
+                            if counter[index].count > len(pullQuoX)/2 - 1 {
+                                fmt.Println("Sending POLL2")
                                 msgPoll := "POLL2:" + node.name + ":" + strconv.Itoa(pullReq.origFrom) + ":" + pullReq.gstr + ":" + pullReq.randstr
                                 node.selectiveBroadcast(msgPoll, []int{pullReq.to})
                                 counter[index].count = -10000
                             }
 
                         }
+                    case pullReq.typ == "ANSWER" : ansChan <- pullReq
                     default: c <- pullReq
                 }
         }
@@ -335,7 +344,7 @@ func (node *Node) answeringPullReqs(c chan PullInfo) {
                                     break
                                 }
                             }
-                            if (counter[index].count > len(pullQuo)/2) && (found == 1) {
+                            if (counter[index].count > len(pullQuo)/2 - 1) && (found == 1) {
                                 counts[pullReq.gstr] += 1
                                 msgPoll := "ANSWER:" + node.name + ":" + pullReq.gstr
                                 node.selectiveBroadcast(msgPoll, []int{pullReq.origFrom})
@@ -368,54 +377,54 @@ func (node *Node) answeringPullReqs(c chan PullInfo) {
                                 }
                             }
                             if found == 1 {
-                                if (counter[index].count > len(pullQuo)/2) {
+                                if (counter[index].count > len(pullQuo)/2 - 1) {
                                     counts[pullReq.gstr] += 1
                                     msgPoll := "ANSWER:" + node.name + ":" + pullReq.gstr
                                     node.selectiveBroadcast(msgPoll, []int{pullReq.origFrom})
                                     counter[index].count = -10000
-
                                 }
                             }
-
-
                         }
-                        
                 }
         }
     }
-                
 }
 
-func (node *Node) pullPhase() {
-    node.sendPullReqs()
-    c := make(chan PullInfo)
-    go node.routingPullReqs(c)
-    node.answeringPullReqs(c)
+func (node *Node) processAnswers(polls map[string][]int, ansChan chan PullInfo) string {
+    counter := make(map[string]int)
+    for {
+        select {
+            case answer := <-ansChan :
+                pollList, ok := polls[answer.gstr]
+                if ok {
+                    counter[answer.gstr] += 1
+                    if counter[answer.gstr] > len(pollList)/2 -1 {
+                        return answer.gstr
+                    }
+                }
+        }
+    }
 }
 
-func (node *Node) getConsensus() {
-    //count := make(map[int]int)
-    //for _, val := range node.setVal {
-    //    count[val] += 1
-    //    //fmt.Printf("I am %s. Setval: %d\n", node.name, val)
-    //}
-    //maxVal := 0
-    //var maxKey int
-    //for key, _ := range count {
-    //    if count[key] > maxVal {
-    //        maxKey = key
-    //        maxVal = count[key]
-    //    }
-    //}
-    //fmt.Println("The consensus is value ", maxKey)
+func (node *Node) pullPhase() string {
+    polls := node.sendPullReqs()
+    fmt.Println("Sent Pull Reqs for:")
+    fmt.Println(polls)
+    pullChan := make(chan PullInfo)
+    ansChan := make(chan PullInfo)
+    go node.routingPullReqs(pullChan, ansChan)
+    go node.answeringPullReqs(pullChan)
+    return node.processAnswers(polls, ansChan)
 }
+
 
 func (node *Node) initConsensus(faults int){
+    fmt.Println("Starting Push phase.")
     node.pushPhase()
     time.Sleep(300*time.Millisecond) 
-    node.pullPhase()
-    //node.getConsensus()
-
+    fmt.Println("Starting Pull phase.")
+    conVal :=  node.pullPhase()
+    fmt.Printf("My %s consensus value is %s\n", node.name, conVal)
 }
 
 func getLog(n int) int {
@@ -437,9 +446,15 @@ func getPushQuorum(cand string, n int, list []int) []int {
     size := getLog(len(list))
     dec := getDecimal(cand)
     quorum := make([]int, 0)
-    for i := 0; i < size; i++ {
+    j := 0
+    for i := 0; i < size + j; i++ {
         num := (((n - 9000) + 1 + dec + i) % len(list)) + 9000
-        quorum = append(quorum, num)
+        switch {
+            case num == n:
+                j++
+            default:
+                quorum = append(quorum, num)
+        }
     }
     return quorum
 }
@@ -448,9 +463,15 @@ func getPullQuorum(cand string, n int, list []int) []int {
     size := getLog(len(list))
     dec := getDecimal(cand)
     quorum := make([]int, 0)
-    for i := 0; i < size; i++ {
+    j := 0
+    for i := 0; i < size + j; i++ {
         num := (((n - 9000) + 1 + dec + i + 3) % len(list)) + 9000
-        quorum = append(quorum, num)
+        switch {
+            case num == n:
+                j++
+            default:
+                quorum = append(quorum, num)
+        }
     }
     return quorum
 }
@@ -459,9 +480,15 @@ func getPollList(cand string, n int, list []int) []int {
     size := getLog(len(list))
     dec := getDecimal(cand)
     quorum := make([]int, 0)
-    for i := 0; i < size; i++ {
+    j := 0
+    for i := 0; i < size + j; i++ {
         num := (((n - 9000) + 1 + dec + i + 2) % len(list)) + 9000
-        quorum = append(quorum, num)
+        switch {
+            case num == n:
+                j++
+            default:
+                quorum = append(quorum, num)
+        }
     }
     return quorum
 }
@@ -492,6 +519,4 @@ func Client(port string, nbrs []string, byz int, faults int, gstring string, can
     node.listen()
     time.Sleep(400*time.Millisecond) 
     node.initConsensus(faults)
-    //fmt.Printf("Hi, my port is %s. The set of values I have received are: \n", node.name)
-    //node.getConsensus()
 }

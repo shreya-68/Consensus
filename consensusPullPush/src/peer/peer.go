@@ -189,13 +189,21 @@ func equal(a []int, b []int) int {
 
 //Message format ---> int1.int2.int3.currRoot:val,int1.int2.int3.currRoot:val, ...,
 func (node *Node) pushPhase() {
+    //var val string
+    //switch {
+    //    case node.byz == 1 :
+    //        val = getGstring(len(node.list))
+    //    default:
+    //        val = node.val
+    //}
+    //msg := node.name + ":" + val
     msg := node.name + ":" + node.val
     node.broadcast(msg)
     time.Sleep(200*time.Millisecond) 
     recvd := node.getPushReqs()
     for s_x, nodes := range recvd {
         quorum := getPushQuorum(s_x, node.addr.Port, node.list)
-        fmt.Println(quorum)
+        //fmt.Println(quorum)
         count := 0
         for _, x := range nodes {
             if find(quorum, x) == 1 {
@@ -263,7 +271,7 @@ func (node *Node) routingPullReqs(c chan PullInfo, ansChan chan PullInfo) {
                     checkErr(err)
                     pullReq = PullInfo{typ: arr[0], from: port, origFrom: orig, gstr: arr[3], randstr: arr[4]}
                 }
-                fmt.Println(pullReq)
+                //fmt.Println(pullReq)
                 switch {
                     case pullReq.typ == "PULL" :
                         pullQuorum := getPullQuorum(pullReq.gstr, pullReq.from, node.list)
@@ -284,7 +292,7 @@ func (node *Node) routingPullReqs(c chan PullInfo, ansChan chan PullInfo) {
                             var index int
                             for i, count := range counter {
                                 if (count.gstr == pullReq.gstr) && (count.x == pullReq. origFrom) {
-                                    count.count += 1
+                                    counter[i].count += 1
                                     found = 1
                                     index = i
                                     break
@@ -295,8 +303,10 @@ func (node *Node) routingPullReqs(c chan PullInfo, ansChan chan PullInfo) {
                                 counter = append(counter, newCount)
                                 index = len(counter)-1
                             }
-                            if counter[index].count > len(pullQuoX)/2 - 1 {
-                                fmt.Println("Sending POLL2")
+                            //fmt.Println("PRINTING COUN AND LEN OF QUORUM")
+                            //fmt.Printf("I am %d, GSTRING IS %s, X is %d\n", node.addr.Port, pullReq.gstr, pullReq.origFrom)
+                            //fmt.Printf("count %d, len/2 %d\n", counter[index].count, len(pullQuoX)/2)
+                            if counter[index].count > (len(pullQuoX)/2 - 1) {
                                 msgPoll := "POLL2:" + node.name + ":" + strconv.Itoa(pullReq.origFrom) + ":" + pullReq.gstr + ":" + pullReq.randstr
                                 node.selectiveBroadcast(msgPoll, []int{pullReq.to})
                                 counter[index].count = -10000
@@ -304,6 +314,7 @@ func (node *Node) routingPullReqs(c chan PullInfo, ansChan chan PullInfo) {
 
                         }
                     case pullReq.typ == "ANSWER" : ansChan <- pullReq
+                                fmt.Println("Received ANSWER")
                     default: c <- pullReq
                 }
         }
@@ -326,7 +337,7 @@ func (node *Node) answeringPullReqs(c chan PullInfo) {
                             var index int
                             for i, count := range counter {
                                 if (count.gstr == pullReq.gstr) && (count.x == pullReq. origFrom) {
-                                    count.count += 1
+                                    counter[i].count += 1
                                     found = 1
                                     index = i
                                     break
@@ -347,6 +358,7 @@ func (node *Node) answeringPullReqs(c chan PullInfo) {
                             if (counter[index].count > len(pullQuo)/2 - 1) && (found == 1) {
                                 counts[pullReq.gstr] += 1
                                 msgPoll := "ANSWER:" + node.name + ":" + pullReq.gstr
+                                fmt.Println("Sending Answer")
                                 node.selectiveBroadcast(msgPoll, []int{pullReq.origFrom})
                                 counter[index].count = -10000
                             }
@@ -379,6 +391,7 @@ func (node *Node) answeringPullReqs(c chan PullInfo) {
                             if found == 1 {
                                 if (counter[index].count > len(pullQuo)/2 - 1) {
                                     counts[pullReq.gstr] += 1
+                                    fmt.Println("Sending Answer")
                                     msgPoll := "ANSWER:" + node.name + ":" + pullReq.gstr
                                     node.selectiveBroadcast(msgPoll, []int{pullReq.origFrom})
                                     counter[index].count = -10000
@@ -409,7 +422,7 @@ func (node *Node) processAnswers(polls map[string][]int, ansChan chan PullInfo) 
 func (node *Node) pullPhase() string {
     polls := node.sendPullReqs()
     fmt.Println("Sent Pull Reqs for:")
-    fmt.Println(polls)
+    //fmt.Println(polls)
     pullChan := make(chan PullInfo)
     ansChan := make(chan PullInfo)
     go node.routingPullReqs(pullChan, ansChan)
@@ -425,6 +438,7 @@ func (node *Node) initConsensus(faults int){
     fmt.Println("Starting Pull phase.")
     conVal :=  node.pullPhase()
     fmt.Printf("My %s consensus value is %s\n", node.name, conVal)
+    time.Sleep(300*time.Millisecond) 
 }
 
 func getLog(n int) int {
@@ -509,12 +523,16 @@ func Client(port string, nbrs []string, byz int, faults int, gstring string, can
     node.nbr = tcpAddrNbr 
     rand.Seed(time.Now().UTC().UnixNano())
     node.setVal = append(node.setVal, node.val)
-    msg := "My (" + strconv.Itoa(node.addr.Port) + ") initial value is " + node.val
-    fmt.Println(msg)
     for _, nbr := range node.nbr {
        node.list = append(node.list, nbr.Port)
     }
     node.list = append(node.list, node.addr.Port)
+    if node.byz == 1 {
+            node.val = "11111111"
+            //node.val = getGstring(len(node.list))
+    }
+    msg := "My (" + strconv.Itoa(node.addr.Port) + ") initial value is " + node.val
+    fmt.Println(msg)
     node.c = make(chan string)
     node.listen()
     time.Sleep(400*time.Millisecond) 

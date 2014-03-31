@@ -27,6 +27,8 @@ type Node struct {
     c       chan string
 }
 
+var a = 2
+
 type Bin struct {
     num int
     list  []BinEntry
@@ -36,6 +38,15 @@ type BinEntry struct {
     port int
     confidence int
 }
+
+type View struct {
+    typ string
+    subcomm []int
+    commNum int
+    myView []int
+    disq int
+}
+
     
 type Tuple struct {
     from int
@@ -49,12 +60,12 @@ type Comp struct {
     comm int
     s_j []int
     D   []int
-    count []int
+    count int
 }
 
 func checkErr(err error) {
     if err != nil {
-        fmt.Printf("Fatal error: %s \n", err)
+        fmt.Printf("Error: %s \n", err)
         os.Exit(1)
     }
 }
@@ -72,9 +83,6 @@ func (node *Node) handleClient(conn net.Conn) {
     msg := string(buf[0:n])
     checkErr(err)
     node.c <- msg
-    //node.setVal = append(node.setVal, val)
-    //fmt.Println("read")
-    //fmt.Println(string(buf[0:n]))
     conn.Close() 
 }
 
@@ -111,11 +119,16 @@ func (node *Node) broadcast(msg string) {
     for _, nbr := range node.nbr {
         conn := node.openTCPconn(nbr)
         node.write(msg, conn)
+        conn.Close()
     }
 }
 
 func getNumOfComm(n int) int {
     return int(float64(n)/math.Log(float64(n)))
+}
+
+func getLog(n int) int {
+    return int(math.Log(float64(n)))
 }
 
 func (node *Node) getGradecast1Store() map[int][]int{
@@ -277,6 +290,7 @@ func (node *Node) gradecastStep2(binStore map[int][]int) map[int]int {
     msg = strings.TrimRight(msg, ",")
     node.broadcast(msg)
     time.Sleep(200*time.Millisecond) 
+    fmt.Println("GRADECAST 2 getting store")
     portStore := node.getGradecast2Store()
     for key, value := range binStore {
         for _, port := range value {
@@ -346,6 +360,7 @@ func (node *Node) selectiveBroadcast(msg string, list []int) {
             checkErr(err)
             conn := node.openTCPconn(addr)
             node.write(msg, conn)
+            conn.Close()
         }
     }
 }
@@ -355,27 +370,30 @@ func (node *Node) getTuples() []Tuple{
     for {
         select {
             case entry := <-node.c :
-                msg := strings.Split(entry, ",")
-                for _, tuple := range msg {
-                    arr := strings.Split(tuple, ".")
-                    if(len(arr) == 5) {
-                        from, _ := strconv.Atoi(arr[0])
-                        s_j := make([]int, 0)
-                        subset := strings.Split(arr[1], ":")
-                        for _, value := range subset {
-                            port, _ := strconv.Atoi(value)
-                            s_j = append(s_j, port)
-                        }
-                        comm, _ := strconv.Atoi(arr[2])
-                        disq, _ := strconv.Atoi(arr[3])
-                        comp := make([]int, 0)
-                        accepts := strings.Split(arr[4], ":")
-                        for _, value := range accepts {
-                            accept, _ := strconv.Atoi(value)
-                            comp = append(comp, accept)
-                        }
-                        entries = append(entries, Tuple{from: from, s_j: s_j, comm: comm, disq: disq, comp: comp})
+                tuples := strings.Split(entry, "/")
+                for _, tuple := range tuples {
+                    msg := strings.Split(tuple, ",")
+                    //msg[0] is FROM
+                    //msg[1] is subcomm
+                    //msg[2] is numcomm
+                    //msg[3] is disq
+                    //msg[4] is compos
+                    from, _ := strconv.Atoi(msg[0])
+                    s_j := make([]int, 0)
+                    subcomm := strings.Split(msg[1], ".")
+                    for _, value := range subcomm {
+                        port, _ := strconv.Atoi(value)
+                        s_j = append(s_j, port)
                     }
+                    comm, _ := strconv.Atoi(msg[2])
+                    disq, _ := strconv.Atoi(msg[3])
+                    comp := make([]int, 0)
+                    accepts := strings.Split(msg[4], ":")
+                    for _, value := range accepts {
+                        accept, _ := strconv.Atoi(value)
+                        comp = append(comp, accept)
+                    }
+                    entries = append(entries, Tuple{from: from, s_j: s_j, comm: comm, disq: disq, comp: comp})
                 }
             default:
                 return entries
@@ -383,95 +401,144 @@ func (node *Node) getTuples() []Tuple{
     }
 }
 
-func (node *Node) getIntersection() map[int][]int {
-    adoptInter := make(map[int][]int)
+func (node *Node) getIntersection() []View {
+    allViews := make([]View, 0)
     for {
         select {
             case entry := <-node.c :
+                fmt.Println("RECEIVED", entry)
                 comms := strings.Split(entry, ",")
-                for _, comm := range comms {
-                    arr := strings.Split(comm, ":")
-                    num, _ := strconv.Atoi(arr[0])
-                    members := strings.Split(arr[1], ".")
-                    for _, member := range members {
-                        port, err := strconv.Atoi(member)
-                        checkErr(err)
-                        found := 0
-                        for _, each := range adoptInter[num] {
-                            if each == port {
-                                found = 1
-                                break
+                //comms[0] is TYPE
+                //comms[1] is from
+                //comms[2] is subcomm
+                //comms[3] is commNum:view.view
+                subcomm := make([]int, 0)
+                mems := strings.Split(comms[2], ".")
+                for _, mem := range mems {
+                    x, _ := strconv.Atoi(mem)
+                    subcomm = append(subcomm, x)
+                }
+                arr := strings.Split(comms[3], ":")
+                num, _ := strconv.Atoi(arr[0])
+                members := strings.Split(arr[1], ".")
+                found := 0
+                for i, eachView := range allViews {
+                    if (equal(eachView.subcomm, subcomm) == 1) && (eachView.commNum == num) && (eachView.typ == comms[0]) {
+                        found = 1
+                        for _, member := range members {
+                            port, err := strconv.Atoi(member)
+                            checkErr(err)
+                            if (find(eachView.myView, port) == 0) {
+                                allViews[i].myView = append(allViews[i].myView, port)
                             }
                         }
-                        if found == 0 {
-                            adoptInter[num] = append(adoptInter[num], port)
-                        }
+                        break
                     }
                 }
+                if found == 0 {
+                    newView := View{typ: comms[0], subcomm:subcomm, commNum: num }
+                    for _, member := range members {
+                        port, _ := strconv.Atoi(member)
+                        newView.myView = append(newView.myView, port)
+                    }
+                    allViews = append(allViews, newView)
+                }
             default:
-                return adoptInter
+                return allViews
         }
     }
 }
 
-func (node *Node) getComposition(acceptee map[int][]int, list []int, numComm int) map[int][]int {
-    msg := ""
+func (node *Node) sendComposition(typ string, acceptee map[int][]int, subcomm []int, numComm int){
+    //ADOPT, from, subcom.sfd.,NUM:skjdf.afa
+    submsg := typ + "," + node.name + ","
+    for _, commMem := range subcomm {
+        submsg += strconv.Itoa(commMem) + "."
+    }
+    submsg = strings.TrimRight(submsg, ".")
+    submsg += ","
     for num, list := range acceptee {
+        msg := submsg
         msg += strconv.Itoa(num) + ":"
         for _, accepted := range list {
             msg += strconv.Itoa(accepted) + "."
         }
         msg = strings.TrimRight(msg, ".")
-        msg += ","
+        node.selectiveBroadcast(msg, subcomm)
     }
-    msg = strings.TrimRight(msg, ",")
-    node.selectiveBroadcast(msg, list)
-    time.Sleep(200*time.Millisecond) 
-    accepts := node.getIntersection()
-    time.Sleep(200*time.Millisecond) 
-    return accepts
 }
 
-func (node *Node) subprotocol(adoptee map[int][]int, acceptee map[int][]int, list []int, numComm int) {
-    adopts := node.getComposition(adoptee, list, numComm)
-    accepts := node.getComposition(acceptee, list, numComm)
-    disq := make(map[int]int)
-    tupleMsg := make([]Tuple, 0)
-    for key, value := range adopts {
-        newTuple := Tuple{s_j: list, comm: key}
-        switch {
-            case len(value) > numComm :
-                disq[key] = 1
-                newTuple.disq = 1
-                tupleMsg = append(tupleMsg, newTuple)
+func (node *Node) subprotocol(adoptee map[int][]int, acceptee map[int][]int, subcomm []int, numComm int) {
+    node.sendComposition("ADOPT", adoptee, subcomm, numComm)
+    node.sendComposition("ACCEPT", acceptee, subcomm, numComm)
+}
+
+func (node *Node) decide(numComm int) []Tuple {
+    allViews := node.getIntersection()
+    allTuples := make([]Tuple, 0)
+    allAccepts := make([]View, 0)
+    allAdopts := make([]View, 0)
+    for _, eachView := range allViews {
+        if eachView.typ == "ADOPT" {
+            allAdopts = append(allAdopts, eachView)
+        }
+        if eachView.typ == "ACCEPT" {
+            allAccepts = append(allAccepts, eachView)
         }
     }
-    for key, value := range accepts {
-        newTuple := Tuple{s_j: list, comm: key}
-        _, ok := disq[key]
-        switch {
-            case !ok :
-                disq[key] = 1
-                newTuple.disq = 0
-                newTuple.comp = value
-                tupleMsg = append(tupleMsg, newTuple)
+    fmt.Println(allAdopts)
+    fmt.Println(allAccepts)
+    log := getLog(len(node.list))
+    for i, eachView := range allAdopts{
+        if len(eachView.myView) > log {
+            fmt.Println("DISQUALIFIED")
+            allViews[i].disq = 1
+            newTuple := Tuple{s_j: eachView.subcomm, comm: eachView.commNum, disq: 1}
+            allTuples = append(allTuples, newTuple)
         }
     }
+    for _, eachAccept := range allAccepts {
+        found := 0
+        for _, eachTuple := range allTuples {
+            if (equal(eachTuple.s_j, eachAccept.subcomm) == 1) && (eachTuple.comm == eachAccept.commNum) {
+                found = 1
+                break
+            }
+        }
+        if found == 0 {
+            newTuple := Tuple{s_j: eachAccept.subcomm, comm: eachAccept.commNum, disq: 0, comp: eachAccept.myView}
+            allTuples = append(allTuples, newTuple)
+        }
+    }
+    return allTuples
+}
+
+//FROM,SJ.SJ.SJ,CI,
+//SENDING TUPLES
+
+func (node *Node) sendTuples(allTuples []Tuple) {
     msg := "" 
-    for _, tuple := range tupleMsg {
-        msg = node.name + "."
+    for _, tuple := range allTuples {
+        msg = node.name + ","
         for _, val := range tuple.s_j {
-            msg += strconv.Itoa(val) + ":"
+            msg += strconv.Itoa(val) + "."
         }
-        msg = strings.TrimRight(msg, ":")
-        msg += "." + strconv.Itoa(tuple.comm) + "." + strconv.Itoa(tuple.disq) + "." 
+        msg = strings.TrimRight(msg, ".")
+        msg += "," + strconv.Itoa(tuple.comm) + "," + strconv.Itoa(tuple.disq) + "," 
+        found := 1
         for _, accept := range tuple.comp {
-            msg += strconv.Itoa(accept) + ":"
+            found = 0
+            msg += strconv.Itoa(accept) + "."
         }
-        msg = strings.TrimRight(msg, ":")
-        msg += ","
+        switch {
+            case found == 0:
+                msg = strings.TrimRight(msg, ".")
+            case found == 1:
+                msg = strings.TrimRight(msg, ",")
+        }
+        msg += "/"
     }
-    msg = strings.TrimRight(msg, ",")
+    msg = strings.TrimRight(msg, "/")
     node.broadcast(msg)
 
 }
@@ -548,9 +615,10 @@ func getFinalComp(comps []Comp) []int {
 }
 
 
-func (node *Node) initRound(roundNum int) {
+func (node *Node) initRound() {
     var numComm int
     numComm = getNumOfComm(node.numNodes)
+    fmt.Println(numComm)
     fmt.Printf("the num of committees for %d nodes are %d\n", node.numNodes, numComm)
     myComm := getRandComm(numComm)
     fmt.Printf("I am %s. Setval: %d\n", node.name, myComm)
@@ -581,18 +649,17 @@ func (node *Node) initRound(roundNum int) {
     fmt.Println(combos)
     fmt.Println(myPort)
     for _, subcomm := range combos {
-        fmt.Println(subcomm)
-        participate := find(subcomm, myPort)
-                fmt.Println("Running subprotocol")
-        switch {
-            case participate == 1 :
-                node.subprotocol(views_adopt, views_accept, subcomm, numComm)
-                time.Sleep(200*time.Millisecond) 
-            default:
-                time.Sleep(700*time.Millisecond) 
+        if find(subcomm, myPort) == 1 {
+            node.subprotocol(views_adopt, views_accept, subcomm, numComm)
         }
     }
-    tuples := node.getTuples()
+    time.Sleep(400*time.Millisecond) 
+
+    tuples := node.decide(numComm)
+    fmt.Println(tuples)
+    go node.sendTuples(tuples)
+    fmt.Println("Sending tuples succeeded")
+    tuples = node.getTuples()
     fmt.Println(tuples)
     //disqMap := make(map[int]int)
     //map_comm_tuple := make(map[int][]Tuple)
@@ -604,16 +671,40 @@ func (node *Node) initRound(roundNum int) {
     //        map_comm_tuple[tuple.comm] = append(map_comm_tuple[tuple.comm], tuple)
     //    }
     //}
+    //log := getLog(len(node.list))
     //for key, value := range disqMap {
-    //    if value >= numComm/2 {
+    //    if value >= log/2 {
     //        disqMap[key] = 1
     //    }
     //}
     //committees := make(map[int][]int)
     //for comm, values := range map_comm_tuple {
     //    comm_sj := make([]Comp, 0)
-    //    for i := 0; i < len(values); i++ {
-    //        newRow := Comp{comm: comm, s_j: values[i].s_j, D: []int{-1}}
+    //    for _, eachVal := range values {
+    //        found := 0
+    //        for index, eachComp := range comm_sj {
+    //            if (equal(eachComp.s_j, eachVal.s_j) == 1) && (equal(eachComp.D, eachVal.comp) == 1) {
+    //                comm_sj[index].count += 1
+    //                found = 1
+    //                break
+    //            }
+    //        }
+    //        if found == 0 {
+    //            newRow := Comp{comm: comm, s_j: eachVal.s_j, D: eachVal.comp, count: 1}
+    //            comm_sj = append(comm_sj, newRow)
+    //        }
+    //    }
+    //    final_comm_sj := make([]Comp, 0)
+    //    for _, eachComp := range comm_sj {
+    //        if eachComp.count >= log/2 {
+    //            final_comm_sj = append(final_comm_sj, eachComp)
+    //        }
+    //    }
+    //    committees[comm] = getFinalComp(final_comm_sj)
+    //}
+    //fmt.Println(committees)
+}
+
     //        D := make([][]int, 0)
     //        D = append(D, values[i].comp)
     //        for j := i+1; j < len(values);  {
@@ -645,15 +736,13 @@ func (node *Node) initRound(roundNum int) {
     //        }
     //        comm_sj = append(comm_sj, newRow)
     //    }
-    //    committees[comm] = getFinalComp(comm_sj)
     //}
     //binNum, binMem := getLightestBin(committees)
     //fmt.Println(binNum, binMem)
-}
 
 
 func (node *Node) initConsensus() {
-    node.initRound(1)
+    node.initRound()
     time.Sleep(600*time.Millisecond) 
     //fmt.Printf("Hi, my port is %s. The set of values I have received are: \n", node.name)
     //val := node.getConsensus()

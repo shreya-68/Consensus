@@ -4,9 +4,9 @@ import (
     "fmt"
     "time"
     "os"
-//    "net"
     "peer"
     "strconv"
+    "sync"
     )
 
 
@@ -50,6 +50,18 @@ func main() {
     var byz int
     faults, _ := strconv.Atoi(os.Args[2])
     //conVal := make([]string, graph.numNodes)
+    wg_g1:= new(sync.WaitGroup)
+    wg_g2:= new(sync.WaitGroup)
+    wg_g3:= new(sync.WaitGroup)
+    wg_stage1:= new(sync.WaitGroup)
+    wg_views := new(sync.WaitGroup)
+    wg_tuples:= new(sync.WaitGroup)
+    wg_g1.Add(graph.numNodes)
+    wg_g2.Add(graph.numNodes)
+    wg_g3.Add(graph.numNodes)
+    wg_stage1.Add(graph.numNodes)
+    wg_views.Add(graph.numNodes)
+    wg_tuples.Add(graph.numNodes)
     for i := 0; i < graph.numNodes; i++{
         port := strconv.Itoa(9000+i)
         nbrs := make([]string, graph.numNodes-1)
@@ -63,7 +75,7 @@ func main() {
             case i < faults: byz = 1
             default: byz = 0
         }
-        go peer.Client(port, nbrs, byz, faults)
+        go peer.Client(port, nbrs, byz, faults, wg_stage1, wg_views, wg_tuples, wg_g1, wg_g2, wg_g3)
     }
     time.Sleep(2000*time.Millisecond) 
     fmt.Printf("Done!")

@@ -10,6 +10,7 @@ import (
     "math/rand"
     "math"
     "strings"
+    "sync"
     )
 
 //Client Node with name, nbr are the first hop neighbours and status is current running status
@@ -25,6 +26,12 @@ type Node struct {
     numNodes int
     numFaults int
     c       chan string
+    wg_s *sync.WaitGroup
+    wg_v *sync.WaitGroup
+    wg_t *sync.WaitGroup
+    wg_g1 *sync.WaitGroup
+    wg_g2 *sync.WaitGroup
+    wg_g3 *sync.WaitGroup
 }
 
 var a = 2
@@ -92,7 +99,15 @@ func (node *Node) accept(listener *net.TCPListener) {
             if err != nil {
                 continue
             }
-            go node.handleClient(conn)
+            var buf [256]byte
+            n, err := conn.Read(buf[0:])
+            checkErr(err)
+            msg := string(buf[0:n])
+            checkErr(err)
+            node.c <- msg
+            conn.Close() 
+            //go node.handleClient(conn)
+            //time.Sleep(200*time.Millisecond) 
             //node.connections[0] = &net.TCPConn(conn)
         }
 }
@@ -110,7 +125,6 @@ func (node *Node) openTCPconn(rcvr *net.TCPAddr) *net.TCPConn {
 }
 
 func (node *Node) write(msg string, conn *net.TCPConn) {
-        //fmt.Printf("Writing %s\n", msg)
         _, err := conn.Write([]byte(msg))
         checkErr(err)
 }
@@ -215,7 +229,6 @@ func (node *Node) getPortBinStore() map[int][]int{
                     portBinStore[port] = append(portBinStore[port], bin)
                 }
             default:
-                //fmt.Println(portBinStore)
                 return portBinStore
         }
     }
@@ -273,7 +286,9 @@ func (node *Node) getBins(portBinStore map[int][]int, myBin int) []Bin{
 func (node *Node) gradecastStep1(value int) map[int][]int {
     msg := node.name + ":" + strconv.Itoa(value)
     node.broadcast(msg)
-    time.Sleep(200*time.Millisecond) 
+    time.Sleep(20*time.Millisecond) 
+    node.wg_g1.Done()
+    node.wg_g1.Wait()
     return node.getGradecast1Store()
 }
 
@@ -288,9 +303,12 @@ func (node *Node) gradecastStep2(binStore map[int][]int) map[int]int {
         msg += ":" + strconv.Itoa(key) + ","
     }
     msg = strings.TrimRight(msg, ",")
+    fmt.Println(msg)
     node.broadcast(msg)
-    time.Sleep(200*time.Millisecond) 
     fmt.Println("GRADECAST 2 getting store")
+    time.Sleep(20*time.Millisecond) 
+    node.wg_g2.Done()
+    node.wg_g2.Wait()
     portStore := node.getGradecast2Store()
     for key, value := range binStore {
         for _, port := range value {
@@ -325,29 +343,22 @@ func (node *Node) gradecastStep3(portStore map[int]int, myBin int) []Bin {
     }
     msg = strings.TrimRight(msg, ",")
     node.broadcast(msg)
-    time.Sleep(200*time.Millisecond) 
+    time.Sleep(20*time.Millisecond) 
+    node.wg_g3.Done()
+    node.wg_g3.Wait()
     portBinStore := node.getPortBinStore()
     for key, value := range portStore {
             portBinStore[key] = append(portBinStore[key], value)
     }
     bins := node.getBins(portBinStore, myBin)
-    //fmt.Println("After gradecast Step 3")
-    //fmt.Println(bins)
-    //bin := getLightestBin(bins)
-    //accept, adopt := getViews(bin)
-    //fmt.Println(accept)
-    //fmt.Println(adopt)
     return bins
 }
 
 func (node *Node) implementGradecast(myVal int) []Bin {
     binStore := node.gradecastStep1(myVal)
-    fmt.Println("GradeCast 1 done")
     portBin := node.gradecastStep2(binStore)
-    fmt.Println("GradeCast 2 done")
     bins := node.gradecastStep3(portBin, myVal)
-    fmt.Println("GradeCast 3 done")
-    fmt.Println(bins)
+    //fmt.Println(bins)
     return bins
 }
 
@@ -373,27 +384,29 @@ func (node *Node) getTuples() []Tuple{
                 tuples := strings.Split(entry, "/")
                 for _, tuple := range tuples {
                     msg := strings.Split(tuple, ",")
-                    //msg[0] is FROM
-                    //msg[1] is subcomm
-                    //msg[2] is numcomm
-                    //msg[3] is disq
-                    //msg[4] is compos
-                    from, _ := strconv.Atoi(msg[0])
-                    s_j := make([]int, 0)
-                    subcomm := strings.Split(msg[1], ".")
-                    for _, value := range subcomm {
-                        port, _ := strconv.Atoi(value)
-                        s_j = append(s_j, port)
+                    if len(msg) == 5 {
+                        //msg[0] is FROM
+                        //msg[1] is subcomm
+                        //msg[2] is numcomm
+                        //msg[3] is disq
+                        //msg[4] is compos
+                        from, _ := strconv.Atoi(msg[0])
+                        s_j := make([]int, 0)
+                        subcomm := strings.Split(msg[1], ".")
+                        for _, value := range subcomm {
+                            port, _ := strconv.Atoi(value)
+                            s_j = append(s_j, port)
+                        }
+                        comm, _ := strconv.Atoi(msg[2])
+                        disq, _ := strconv.Atoi(msg[3])
+                        comp := make([]int, 0)
+                        accepts := strings.Split(msg[4], ".")
+                        for _, value := range accepts {
+                            accept, _ := strconv.Atoi(value)
+                            comp = append(comp, accept)
+                        }
+                        entries = append(entries, Tuple{from: from, s_j: s_j, comm: comm, disq: disq, comp: comp})
                     }
-                    comm, _ := strconv.Atoi(msg[2])
-                    disq, _ := strconv.Atoi(msg[3])
-                    comp := make([]int, 0)
-                    accepts := strings.Split(msg[4], ":")
-                    for _, value := range accepts {
-                        accept, _ := strconv.Atoi(value)
-                        comp = append(comp, accept)
-                    }
-                    entries = append(entries, Tuple{from: from, s_j: s_j, comm: comm, disq: disq, comp: comp})
                 }
             default:
                 return entries
@@ -406,42 +419,43 @@ func (node *Node) getIntersection() []View {
     for {
         select {
             case entry := <-node.c :
-                fmt.Println("RECEIVED", entry)
                 comms := strings.Split(entry, ",")
-                //comms[0] is TYPE
-                //comms[1] is from
-                //comms[2] is subcomm
-                //comms[3] is commNum:view.view
-                subcomm := make([]int, 0)
-                mems := strings.Split(comms[2], ".")
-                for _, mem := range mems {
-                    x, _ := strconv.Atoi(mem)
-                    subcomm = append(subcomm, x)
-                }
-                arr := strings.Split(comms[3], ":")
-                num, _ := strconv.Atoi(arr[0])
-                members := strings.Split(arr[1], ".")
-                found := 0
-                for i, eachView := range allViews {
-                    if (equal(eachView.subcomm, subcomm) == 1) && (eachView.commNum == num) && (eachView.typ == comms[0]) {
-                        found = 1
-                        for _, member := range members {
-                            port, err := strconv.Atoi(member)
-                            checkErr(err)
-                            if (find(eachView.myView, port) == 0) {
-                                allViews[i].myView = append(allViews[i].myView, port)
+                if len(comms) == 4 {
+                    //comms[0] is TYPE
+                    //comms[1] is from
+                    //comms[2] is subcomm
+                    //comms[3] is commNum:view.view
+                    subcomm := make([]int, 0)
+                    mems := strings.Split(comms[2], ".")
+                    for _, mem := range mems {
+                        x, _ := strconv.Atoi(mem)
+                        subcomm = append(subcomm, x)
+                    }
+                    arr := strings.Split(comms[3], ":")
+                    num, _ := strconv.Atoi(arr[0])
+                    members := strings.Split(arr[1], ".")
+                    found := 0
+                    for i, eachView := range allViews {
+                        if (equal(eachView.subcomm, subcomm) == 1) && (eachView.commNum == num) && (eachView.typ == comms[0]) {
+                            found = 1
+                            for _, member := range members {
+                                port, err := strconv.Atoi(member)
+                                checkErr(err)
+                                if (find(eachView.myView, port) == 0) {
+                                    allViews[i].myView = append(allViews[i].myView, port)
+                                }
                             }
+                            break
                         }
-                        break
                     }
-                }
-                if found == 0 {
-                    newView := View{typ: comms[0], subcomm:subcomm, commNum: num }
-                    for _, member := range members {
-                        port, _ := strconv.Atoi(member)
-                        newView.myView = append(newView.myView, port)
+                    if found == 0 {
+                        newView := View{typ: comms[0], subcomm:subcomm, commNum: num }
+                        for _, member := range members {
+                            port, _ := strconv.Atoi(member)
+                            newView.myView = append(newView.myView, port)
+                        }
+                        allViews = append(allViews, newView)
                     }
-                    allViews = append(allViews, newView)
                 }
             default:
                 return allViews
@@ -486,8 +500,8 @@ func (node *Node) decide(numComm int) []Tuple {
             allAccepts = append(allAccepts, eachView)
         }
     }
-    fmt.Println(allAdopts)
-    fmt.Println(allAccepts)
+    //fmt.Println(allAdopts)
+    //fmt.Println(allAccepts)
     log := getLog(len(node.list))
     for i, eachView := range allAdopts{
         if len(eachView.myView) > log {
@@ -614,8 +628,17 @@ func getFinalComp(comps []Comp) []int {
     return comps[maxIndex].D
 }
 
+func (node *Node) check() {
+    for {
+        select {
+            case left := <-node.c:
+                fmt.Println("STILL LEFT TO READ", node.name, left)
+            default: return
+        }
+    }
+}
 
-func (node *Node) initRound() {
+func (node *Node) initConsensus() {
     var numComm int
     numComm = getNumOfComm(node.numNodes)
     fmt.Println(numComm)
@@ -639,70 +662,74 @@ func (node *Node) initRound() {
             views_adopt[bin.num] = append(views_adopt[bin.num], entry.port)
         }
     }
-    fmt.Println(views_accept)
-    fmt.Println("Got all views")
+    //fmt.Println(views_accept)
+    //fmt.Println("Got all views")
+    node.wg_s.Done()
+    node.wg_s.Wait()
 
 
     //Stage 2: Agreeing on the composition of the smallest
     combos := getCombination(node.list, s_j)
-    fmt.Println("Combinations")
-    fmt.Println(combos)
-    fmt.Println(myPort)
     for _, subcomm := range combos {
         if find(subcomm, myPort) == 1 {
             node.subprotocol(views_adopt, views_accept, subcomm, numComm)
         }
     }
-    time.Sleep(400*time.Millisecond) 
+    time.Sleep(20*time.Millisecond) 
+    node.wg_v.Done()
+    node.wg_v.Wait()
 
     tuples := node.decide(numComm)
-    fmt.Println(tuples)
-    go node.sendTuples(tuples)
-    fmt.Println("Sending tuples succeeded")
+    node.sendTuples(tuples)
+    time.Sleep(20*time.Millisecond) 
+    node.wg_t.Done()
+    node.wg_t.Wait()
     tuples = node.getTuples()
-    fmt.Println(tuples)
-    //disqMap := make(map[int]int)
-    //map_comm_tuple := make(map[int][]Tuple)
-    //for _, tuple := range tuples {
-    //    if find(tuple.s_j, tuple.from) == 1 && subset(tuple.s_j, views_accept[tuple.comm]) == 1 && (tuple.disq == 1) {
-    //        disqMap[tuple.comm] += 1
-    //    }
-    //    if (tuple.disq == 0) && find(tuple.s_j, tuple.from) == 1 {
-    //        map_comm_tuple[tuple.comm] = append(map_comm_tuple[tuple.comm], tuple)
-    //    }
-    //}
-    //log := getLog(len(node.list))
-    //for key, value := range disqMap {
-    //    if value >= log/2 {
-    //        disqMap[key] = 1
-    //    }
-    //}
-    //committees := make(map[int][]int)
-    //for comm, values := range map_comm_tuple {
-    //    comm_sj := make([]Comp, 0)
-    //    for _, eachVal := range values {
-    //        found := 0
-    //        for index, eachComp := range comm_sj {
-    //            if (equal(eachComp.s_j, eachVal.s_j) == 1) && (equal(eachComp.D, eachVal.comp) == 1) {
-    //                comm_sj[index].count += 1
-    //                found = 1
-    //                break
-    //            }
-    //        }
-    //        if found == 0 {
-    //            newRow := Comp{comm: comm, s_j: eachVal.s_j, D: eachVal.comp, count: 1}
-    //            comm_sj = append(comm_sj, newRow)
-    //        }
-    //    }
-    //    final_comm_sj := make([]Comp, 0)
-    //    for _, eachComp := range comm_sj {
-    //        if eachComp.count >= log/2 {
-    //            final_comm_sj = append(final_comm_sj, eachComp)
-    //        }
-    //    }
-    //    committees[comm] = getFinalComp(final_comm_sj)
-    //}
-    //fmt.Println(committees)
+    fmt.Println("PRINTING TUPLES", tuples)
+    disqMap := make(map[int]int)
+    map_comm_tuple := make(map[int][]Tuple)
+    for _, tuple := range tuples {
+        if find(tuple.s_j, tuple.from) == 1 && subset(tuple.s_j, views_accept[tuple.comm]) == 1 && (tuple.disq == 1) {
+            disqMap[tuple.comm] += 1
+        }
+        if (tuple.disq == 0) && find(tuple.s_j, tuple.from) == 1 {
+            map_comm_tuple[tuple.comm] = append(map_comm_tuple[tuple.comm], tuple)
+        }
+    }
+    fmt.Println("PRINTING MAPCOMM", map_comm_tuple)
+    log := getLog(len(node.list))
+    for key, value := range disqMap {
+        if value >= log/2 {
+            disqMap[key] = 1
+        }
+    }
+    committees := make(map[int][]int)
+    for comm, values := range map_comm_tuple {
+        comm_sj := make([]Comp, 0)
+        for _, eachVal := range values {
+            found := 0
+            for index, eachComp := range comm_sj {
+                if (equal(eachComp.s_j, eachVal.s_j) == 1) && (equal(eachComp.D, eachVal.comp) == 1) {
+                    comm_sj[index].count += 1
+                    found = 1
+                    break
+                }
+            }
+            if found == 0 {
+                newRow := Comp{comm: comm, s_j: eachVal.s_j, D: eachVal.comp, count: 1}
+                comm_sj = append(comm_sj, newRow)
+            }
+        }
+        //fmt.Println("PRINTING COMM_SJ", comm_sj)
+        final_comm_sj := make([]Comp, 0)
+        for _, eachComp := range comm_sj {
+            if eachComp.count >= log/2 {
+                final_comm_sj = append(final_comm_sj, eachComp)
+            }
+        }
+        committees[comm] = getFinalComp(final_comm_sj)
+    }
+    fmt.Println("PRINTING COMMITTEES", committees)
 }
 
     //        D := make([][]int, 0)
@@ -741,13 +768,6 @@ func (node *Node) initRound() {
     //fmt.Println(binNum, binMem)
 
 
-func (node *Node) initConsensus() {
-    node.initRound()
-    time.Sleep(600*time.Millisecond) 
-    //fmt.Printf("Hi, my port is %s. The set of values I have received are: \n", node.name)
-    //val := node.getConsensus()
-    //fmt.Println("The consensus is value ", val)
-}
 
 func (node *Node) getConsensus() int {
     count := make(map[int]int)
@@ -774,8 +794,8 @@ func initVal() int{
 }
 
 
-func Client(port string, nbrs []string, byz int, faults int) {
-    node := Node{name: port, status: "Init", byz: byz, numFaults: faults}
+func Client(port string, nbrs []string, byz int, faults int, wg_stage1 *sync.WaitGroup, wg_views *sync.WaitGroup, wg_tuples *sync.WaitGroup, wg_g1 *sync.WaitGroup, wg_g2 *sync.WaitGroup, wg_g3 *sync.WaitGroup) {
+    node := Node{name: port, status: "Init", byz: byz, numFaults: faults, wg_s: wg_stage1, wg_v: wg_views, wg_t: wg_tuples, wg_g1: wg_g1, wg_g2: wg_g2, wg_g3: wg_g3}
     var err error
     port = ":" + port
     node.addr, err = net.ResolveTCPAddr("tcp", port)
@@ -797,7 +817,7 @@ func Client(port string, nbrs []string, byz int, faults int) {
     node.numNodes = len(node.list)
     node.setVal = append(node.setVal, node.val)
     msg := "My (" + strconv.Itoa(node.addr.Port) + ") initial value is " + strconv.Itoa(node.val)
-    node.c = make(chan string)
+    node.c = make(chan string, 1000)
     fmt.Println(msg)
     node.listen()
     time.Sleep(200*time.Millisecond) 

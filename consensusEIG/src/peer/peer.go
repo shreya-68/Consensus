@@ -9,6 +9,7 @@ import (
     "strconv"
     "math/rand"
     "strings"
+    "sync"
     )
 
 //Client Node with name, nbr are the first hop neighbours and status is current running status
@@ -22,6 +23,8 @@ type Node struct {
     list    []int
     byz     int
     root    *EIGNode
+    c       chan string
+    wg []*sync.WaitGroup
 }
 
 func checkErr(err error) {
@@ -47,52 +50,36 @@ func (node *Node) handleClient(conn net.Conn) {
     var buf [256]byte
     n, err := conn.Read(buf[0:])
     checkErr(err)
-    //val, err := strconv.Atoi(string(buf[0:n]))
-    //checkErr(err)
-    //node.setVal = append(node.setVal, val)
     msg := string(buf[0:n])
-    eachNode := strings.Split(msg, ",")
-    for _, each := range eachNode {
-        pathVal := strings.Split(each, ":")
-        pathStr := strings.Split(pathVal[0], ".")
-        path := []int{}
-        for _, eachInt := range pathStr {
-            x, _ := strconv.Atoi(eachInt)
-            path = append(path, x)
-        }
-        value, _  := strconv.Atoi(pathVal[1])
-        depth := len(path)
-        curr := node.root
-        for i := 0; i < depth; i++ {
-            for _, child := range curr.child {
-                if child.path[i] == path[i] {
-                    curr = child
-                    break
-                }
-            }
-        }
-        curr.val = value
-    }
-    //fmt.Println("read")
-    //fmt.Println(msg)
+    checkErr(err)
+    node.c <- msg
+    
     conn.Close() 
 }
 
-func (node *Node) accept(listener *net.TCPListener) {
+func (node *Node) accept(listener *net.TCPListener, k *int) {
     for {
             conn, err := listener.Accept()
             if err != nil {
                 continue
             }
-            go node.handleClient(conn)
-            //node.connections[0] = &net.TCPConn(conn)
+            *k = *k + 1
+            //fmt.Println(*k)
+            var buf [256]byte
+            n, err := conn.Read(buf[0:])
+            checkErr(err)
+            msg := string(buf[0:n])
+            checkErr(err)
+            node.c <- msg
+            conn.Close() 
+            //go node.handleClient(conn)
         }
 }
 
-func (node *Node) listen() {
+func (node *Node) listen(k *int) {
     listener, err := net.ListenTCP("tcp", node.addr)
     checkErr(err)
-    go node.accept(listener)
+    go node.accept(listener, k)
 }
 
 func (node *Node) openTCPconn(rcvr *net.TCPAddr) *net.TCPConn {
@@ -113,6 +100,41 @@ func (node *Node) broadcast(msg string) {
         node.write(msg, conn)
         conn.Close()
         
+    }
+}
+
+func (node *Node) setChildVals() {
+    for {
+        select {
+            case entry := <-node.c:
+                eachNode := strings.Split(entry, ",")
+                for _, each := range eachNode {
+                    pathVal := strings.Split(each, ":")
+                    if len(pathVal) == 2 {
+                        pathStr := strings.Split(pathVal[0], ".")
+                        path := make([]int, 0)
+                        for _, eachInt := range pathStr {
+                            x, _ := strconv.Atoi(eachInt)
+                            path = append(path, x)
+                        }
+                        value, _  := strconv.Atoi(pathVal[1])
+                        depth := len(path)
+                        curr := node.root
+                        for i := 0; i < depth; i++ {
+                            for _, child := range curr.child {
+                                if len(child.path) >= i+1 {
+                                    if child.path[i] == path[i] {
+                                        curr = child
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                        curr.val = value
+                    }
+                }
+            default: return
+        }
     }
 }
 
@@ -142,7 +164,9 @@ func (node *Node) createChildren(eigNode *EIGNode) {
 func (node *Node) traverseEIG(eigNode *EIGNode, depth int) []*EIGNode {
     if depth == 0 {
         node.createChildren(eigNode)
-        //fmt.Println(eigNode.child)
+        if node.root == eigNode {
+            return []*EIGNode{eigNode}
+        }
         found := 0
         for _, j := range eigNode.path {
             if node.addr.Port == j {
@@ -150,6 +174,7 @@ func (node *Node) traverseEIG(eigNode *EIGNode, depth int) []*EIGNode {
                 break
             }
         }
+        //fmt.Println(eigNode)
         if found == 0 {
             //fmt.Println("To send: ", eigNode.val)
             return []*EIGNode{eigNode}
@@ -165,8 +190,9 @@ func (node *Node) traverseEIG(eigNode *EIGNode, depth int) []*EIGNode {
 }
 
 //Message format ---> int1.int2.int3.currRoot:val,int1.int2.int3.currRoot:val, ...,
-func (node *Node) initRound(roundNum int) {
-    sendThis := node.traverseEIG(node.root, roundNum-1)
+func (node *Node) initRound(roundNum int, t *int) {
+    sendThis := node.traverseEIG(node.root, roundNum)
+
     msg := ""
     for _, each := range sendThis {
         for _, pathInt := range each.path {
@@ -180,6 +206,7 @@ func (node *Node) initRound(roundNum int) {
     }
     msg = strings.TrimRight(msg, ",")
     //msg = strconv.Itoa(node.val)
+    *t = *t + 1
     node.broadcast(msg)
 }
 
@@ -238,18 +265,25 @@ func (node *Node) getConsensus(level int) {
     }
 }
 
-func (node *Node) initConsensus(faults int){
-    for i := 1; i <= faults + 1; i++ {
-        node.initRound(i)
-        time.Sleep(300*time.Millisecond) 
+func (node *Node) initConsensus(faults int, t *int){
+    defer func() {
+        if r := recover(); r != nil {
+            fmt.Println("Recovered", r)
+        }
+    }()
+    for i := 0; i <= faults ; i++ {
+        node.initRound(i, t)
+        node.wg[i].Done()
+        node.wg[i].Wait()
+        node.setChildVals()
     }
     node.getConsensus(faults)
     fmt.Printf("My %s final value is %d \n", node.name, node.root.newval)
 
 }
 
-func Client(port string, nbrs []string, byz int, faults int) {
-    node := Node{name: port, status: "Init", byz: byz}
+func Client(port string, nbrs []string, byz int, faults int, wg []*sync.WaitGroup, wg_done *sync.WaitGroup, k *int, t *int) {
+    node := Node{name: port, status: "Init", byz: byz, wg: wg}
     var err error
     port = ":" + port
     node.addr, err = net.ResolveTCPAddr("tcp", port)
@@ -271,10 +305,9 @@ func Client(port string, nbrs []string, byz int, faults int) {
        node.list = append(node.list, nbr.Port)
     }
     node.list = append(node.list, node.addr.Port)
-
-    node.listen()
-    time.Sleep(400*time.Millisecond) 
-    node.initConsensus(faults)
-    //fmt.Printf("Hi, my port is %s. The set of values I have received are: \n", node.name)
-    //node.getConsensus()
+    node.c = make(chan string, 10000000)
+    node.listen(k)
+    time.Sleep(200*time.Millisecond) 
+    node.initConsensus(faults, t)
+    wg_done.Done()
 }

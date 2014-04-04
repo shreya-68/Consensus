@@ -32,6 +32,7 @@ type Node struct {
     wg_g1 *sync.WaitGroup
     wg_g2 *sync.WaitGroup
     wg_g3 *sync.WaitGroup
+    wg_final *sync.WaitGroup
 }
 
 var a = 2
@@ -93,29 +94,22 @@ func (node *Node) handleClient(conn net.Conn) {
     conn.Close() 
 }
 
-func (node *Node) accept(listener *net.TCPListener) {
+func (node *Node) accept(listener *net.TCPListener, k *int) {
     for {
             conn, err := listener.Accept()
             if err != nil {
                 continue
             }
-            var buf [256]byte
-            n, err := conn.Read(buf[0:])
-            checkErr(err)
-            msg := string(buf[0:n])
-            checkErr(err)
-            node.c <- msg
-            conn.Close() 
-            //go node.handleClient(conn)
-            //time.Sleep(200*time.Millisecond) 
-            //node.connections[0] = &net.TCPConn(conn)
+            *k = *k + 1
+            fmt.Println(*k)
+            go node.handleClient(conn)
         }
 }
 
-func (node *Node) listen() {
+func (node *Node) listen(k *int) {
     listener, err := net.ListenTCP("tcp", node.addr)
     checkErr(err)
-    go node.accept(listener)
+    go node.accept(listener, k)
 }
 
 func (node *Node) openTCPconn(rcvr *net.TCPAddr) *net.TCPConn {
@@ -303,9 +297,7 @@ func (node *Node) gradecastStep2(binStore map[int][]int) map[int]int {
         msg += ":" + strconv.Itoa(key) + ","
     }
     msg = strings.TrimRight(msg, ",")
-    fmt.Println(msg)
     node.broadcast(msg)
-    fmt.Println("GRADECAST 2 getting store")
     time.Sleep(20*time.Millisecond) 
     node.wg_g2.Done()
     node.wg_g2.Wait()
@@ -478,6 +470,7 @@ func (node *Node) sendComposition(typ string, acceptee map[int][]int, subcomm []
             msg += strconv.Itoa(accepted) + "."
         }
         msg = strings.TrimRight(msg, ".")
+        //fmt.Println(msg, subcomm)
         node.selectiveBroadcast(msg, subcomm)
     }
 }
@@ -489,6 +482,7 @@ func (node *Node) subprotocol(adoptee map[int][]int, acceptee map[int][]int, sub
 
 func (node *Node) decide(numComm int) []Tuple {
     allViews := node.getIntersection()
+    //fmt.Println("PRINTING all views", allViews)
     allTuples := make([]Tuple, 0)
     allAccepts := make([]View, 0)
     allAdopts := make([]View, 0)
@@ -638,15 +632,32 @@ func (node *Node) check() {
     }
 }
 
+func (node *Node) getHighest() int {
+    high := -1
+    for {
+        select {
+            case entry := <-node.c:
+                num, _ := strconv.Atoi(entry)
+                if high < num || high == -1 {
+                    high = num
+                }
+            default: return high
+        }
+    }
+}
+
 func (node *Node) initConsensus() {
     var numComm int
     numComm = getNumOfComm(node.numNodes)
-    fmt.Println(numComm)
     fmt.Printf("the num of committees for %d nodes are %d\n", node.numNodes, numComm)
     myComm := getRandComm(numComm)
     fmt.Printf("I am %s. Setval: %d\n", node.name, myComm)
     var s_j int 
     s_j = numComm*3/4
+    //if len(node.list) > 16 {
+    //    s_j = numComm*3/8
+    //}
+    fmt.Println("SJ:", s_j, numComm)
     myPort, _ := strconv.Atoi(node.name)
 
     //Stage 1: Getting all the committees
@@ -670,22 +681,24 @@ func (node *Node) initConsensus() {
 
     //Stage 2: Agreeing on the composition of the smallest
     combos := getCombination(node.list, s_j)
+    fmt.Println(len(combos))
+    fmt.Println("CAME here")
     for _, subcomm := range combos {
         if find(subcomm, myPort) == 1 {
             node.subprotocol(views_adopt, views_accept, subcomm, numComm)
         }
+        //fmt.Println("INDEX:", i)
     }
-    time.Sleep(20*time.Millisecond) 
     node.wg_v.Done()
     node.wg_v.Wait()
 
     tuples := node.decide(numComm)
+    //fmt.Println("PRINTING TUPLES", tuples)
     node.sendTuples(tuples)
     time.Sleep(20*time.Millisecond) 
     node.wg_t.Done()
     node.wg_t.Wait()
     tuples = node.getTuples()
-    fmt.Println("PRINTING TUPLES", tuples)
     disqMap := make(map[int]int)
     map_comm_tuple := make(map[int][]Tuple)
     for _, tuple := range tuples {
@@ -696,7 +709,7 @@ func (node *Node) initConsensus() {
             map_comm_tuple[tuple.comm] = append(map_comm_tuple[tuple.comm], tuple)
         }
     }
-    fmt.Println("PRINTING MAPCOMM", map_comm_tuple)
+    //fmt.Println("PRINTING MAPCOMM", map_comm_tuple)
     log := getLog(len(node.list))
     for key, value := range disqMap {
         if value >= log/2 {
@@ -729,43 +742,37 @@ func (node *Node) initConsensus() {
         }
         committees[comm] = getFinalComp(final_comm_sj)
     }
-    fmt.Println("PRINTING COMMITTEES", committees)
+    //fmt.Println("PRINTING COMMITTEES", committees)
+    binNum, binMem := getLightestBin(committees)
+    fmt.Println(binNum, binMem)
+    get := 0
+    if find(binMem, myPort) == 1 {
+        num := rand.Intn(100)
+        msg := strconv.Itoa(num)
+        fmt.Println("My rand is", node.name, msg)
+        node.selectiveBroadcast(msg, binMem)
+        time.Sleep(200*time.Millisecond) 
+        high := node.getHighest()
+        fmt.Println(high)
+        if high == num || num > high {
+            msg := strconv.Itoa(node.val)
+            node.broadcast(msg)
+            get = 1
+        }
+    }
+    node.wg_final.Done()
+    node.wg_final.Wait()
+    var consensus int
+    switch {
+        case get == 1:
+            consensus = node.val
+        default:
+            consensus, _ = strconv.Atoi(<-node.c)
+    }
+    fmt.Println("My consensus value:", node.name, consensus)
+
 }
 
-    //        D := make([][]int, 0)
-    //        D = append(D, values[i].comp)
-    //        for j := i+1; j < len(values);  {
-    //            switch {
-    //            case (equal(values[i].s_j, values[j].s_j) == 1) :
-    //                found := 0
-    //                for index, comp := range D {
-    //                    if equal(comp, values[j].comp) == 1 {
-    //                        newRow.count[index] += 1
-    //                        found = 1
-    //                        break
-    //                    }
-    //                }
-    //                if found == 0 {
-    //                    D = append(D, values[j].comp)
-    //                    newRow.count = append(newRow.count, 1)
-    //                }
-    //                first := values[:j]
-    //                last := values[j+1:]
-    //                values = append(first, last...)
-    //            default: 
-    //                j++
-    //            }
-    //        }
-    //        for index, num := range newRow.count {
-    //            if num >= numComm/2 {
-    //                newRow.D = D[index]
-    //            }
-    //        }
-    //        comm_sj = append(comm_sj, newRow)
-    //    }
-    //}
-    //binNum, binMem := getLightestBin(committees)
-    //fmt.Println(binNum, binMem)
 
 
 
@@ -794,8 +801,8 @@ func initVal() int{
 }
 
 
-func Client(port string, nbrs []string, byz int, faults int, wg_stage1 *sync.WaitGroup, wg_views *sync.WaitGroup, wg_tuples *sync.WaitGroup, wg_g1 *sync.WaitGroup, wg_g2 *sync.WaitGroup, wg_g3 *sync.WaitGroup) {
-    node := Node{name: port, status: "Init", byz: byz, numFaults: faults, wg_s: wg_stage1, wg_v: wg_views, wg_t: wg_tuples, wg_g1: wg_g1, wg_g2: wg_g2, wg_g3: wg_g3}
+func Client(port string, nbrs []string, byz int, faults int, wg_stage1 *sync.WaitGroup, wg_views *sync.WaitGroup, wg_tuples *sync.WaitGroup, wg_g1 *sync.WaitGroup, wg_g2 *sync.WaitGroup, wg_g3 *sync.WaitGroup, wg_final *sync.WaitGroup, wg *sync.WaitGroup, k *int) {
+    node := Node{name: port, status: "Init", byz: byz, numFaults: faults, wg_s: wg_stage1, wg_v: wg_views, wg_t: wg_tuples, wg_g1: wg_g1, wg_g2: wg_g2, wg_g3: wg_g3, wg_final: wg_final}
     var err error
     port = ":" + port
     node.addr, err = net.ResolveTCPAddr("tcp", port)
@@ -807,7 +814,6 @@ func Client(port string, nbrs []string, byz int, faults int, wg_stage1 *sync.Wai
         tcpAddrNbr[i] = addr
     }
     node.nbr = tcpAddrNbr 
-    //fmt.Printf("Hi my name is %s\n", node.name)
     rand.Seed(time.Now().UTC().UnixNano())
     node.val = initVal()
     for _, nbr := range node.nbr {
@@ -817,9 +823,10 @@ func Client(port string, nbrs []string, byz int, faults int, wg_stage1 *sync.Wai
     node.numNodes = len(node.list)
     node.setVal = append(node.setVal, node.val)
     msg := "My (" + strconv.Itoa(node.addr.Port) + ") initial value is " + strconv.Itoa(node.val)
-    node.c = make(chan string, 1000)
+    node.c = make(chan string, 500000)
     fmt.Println(msg)
-    node.listen()
+    node.listen(k)
     time.Sleep(200*time.Millisecond) 
     node.initConsensus()
+    wg.Done()
 }

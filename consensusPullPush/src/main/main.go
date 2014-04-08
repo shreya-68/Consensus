@@ -10,6 +10,7 @@ import (
     "math/rand"
     "math"
     "strings"
+    "sync"
     )
 
 
@@ -89,6 +90,17 @@ func main() {
     
     var byz int
     faults, _ := strconv.Atoi(os.Args[2])
+    wg_pull := new(sync.WaitGroup)
+    wg_pull.Add(graph.numNodes)
+    wg := new(sync.WaitGroup)
+    wg.Add(graph.numNodes)
+    wg_push := new(sync.WaitGroup)
+    wg_push.Add(graph.numNodes)
+    wg_ans := new(sync.WaitGroup)
+    wg_ans.Add(graph.numNodes)
+    msgComp := make([]int, graph.numNodes)
+    timeComp := make([]int, graph.numNodes)
+
     for i := 0; i < graph.numNodes; i++{
         port := strconv.Itoa(9000+i)
         nbrs := make([]string, graph.numNodes-1)
@@ -102,9 +114,21 @@ func main() {
             case i < faults: byz = 1
             default: byz = 0
         }
-        go peer.Client(port, nbrs, byz, faults, gstring, candStrings)
+        go peer.Client(port, nbrs, byz, faults, gstring, candStrings, wg_push, wg_ans, wg_pull, wg, &msgComp[i], &timeComp[i])
     }
-    time.Sleep(3000*time.Millisecond) 
+    wg.Wait()
+    sum := 0
+    for _, numMsg := range msgComp {
+        sum += numMsg
+    }
+    time := 0
+    for _, numR := range timeComp {
+        if time < numR {
+            time = numR
+        }
+    }
+    fmt.Println("No. of Msgs sent:", sum)
+    fmt.Println("No. of rounds :", time)
     fmt.Printf("Done!")
     os.Exit(0)
 }

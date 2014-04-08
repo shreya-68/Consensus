@@ -11,6 +11,7 @@ import (
     "math/rand"
     "math"
     "strings"
+    "sync"
     )
 
 //Client Node with name, nbr are the first hop neighbours and status is current running status
@@ -25,6 +26,12 @@ type Node struct {
     byz     int
     candStrs []string
     c       chan string
+    pullChan       chan PullInfo
+    ansChan       chan PullInfo
+    wg_push *sync.WaitGroup
+    wg_pull *sync.WaitGroup
+    wg_ans *sync.WaitGroup
+    wg *sync.WaitGroup
 }
 
 var c = 2
@@ -56,7 +63,7 @@ func initVal() int{
 }
 
 func (node *Node) handleClient(conn net.Conn) {
-    var buf [256]byte
+    var buf [1024]byte
     n, err := conn.Read(buf[0:])
     checkErr(err)
     msg := string(buf[0:n])
@@ -105,21 +112,25 @@ func (node *Node) getPushReqs() map[string][]int {
 //    }
 //}
 
-func (node *Node) accept(listener *net.TCPListener) {
+func (node *Node) accept(listener *net.TCPListener, k *int) {
     for {
             conn, err := listener.Accept()
             if err != nil {
                 continue
+            }
+            *k = *k + 1
+            if node.name == "9000" {
+                fmt.Println(*k)
             }
             go node.handleClient(conn)
             //node.connections[0] = &net.TCPConn(conn)
         }
 }
 
-func (node *Node) listen() {
+func (node *Node) listen(k *int) {
     listener, err := net.ListenTCP("tcp", node.addr)
     checkErr(err)
-    go node.accept(listener)
+    go node.accept(listener, k)
 }
 
 func (node *Node) openTCPconn(rcvr *net.TCPAddr) *net.TCPConn {
@@ -152,6 +163,7 @@ func (node *Node) selectiveBroadcast(msg string, list []int) {
             checkErr(err)
             conn := node.openTCPconn(addr)
             node.write(msg, conn)
+            conn.Close()
         }
     }
 }
@@ -199,7 +211,8 @@ func (node *Node) pushPhase() {
     //msg := node.name + ":" + val
     msg := node.name + ":" + node.val
     node.broadcast(msg)
-    time.Sleep(200*time.Millisecond) 
+    node.wg_push.Done()
+    node.wg_push.Wait()
     recvd := node.getPushReqs()
     for s_x, nodes := range recvd {
         quorum := getPushQuorum(s_x, node.addr.Port, node.list)
@@ -244,7 +257,7 @@ func (node *Node) sendPullReqs() map[string][]int {
     return polls
 }
 
-func (node *Node) routingPullReqs(c chan PullInfo, ansChan chan PullInfo) {
+func (node *Node) routingPullReqs() {
     //pulls := node.getPullReqs()
     counter := make([]Counter, 0)
     for {
@@ -313,21 +326,21 @@ func (node *Node) routingPullReqs(c chan PullInfo, ansChan chan PullInfo) {
                             }
 
                         }
-                    case pullReq.typ == "ANSWER" : ansChan <- pullReq
+                    case pullReq.typ == "ANSWER" : node.ansChan <- pullReq
                                 fmt.Println("Received ANSWER")
-                    default: c <- pullReq
+                    default: node.pullChan <- pullReq
                 }
         }
     }
 }
 
-func (node *Node) answeringPullReqs(c chan PullInfo) {
+func (node *Node) answeringPullReqs() {
     counts := make(map[string]int)
     counter := make([]Counter, 0)
     polled := make([]Counter, 0)
     for {
         select {
-            case pullReq := <-c :
+            case pullReq := <- node.pullChan :
                 switch {
                     case pullReq.typ == "POLL2": 
                         pullQuo := getPullQuorum(pullReq.gstr, node.addr.Port, node.list)
@@ -403,11 +416,16 @@ func (node *Node) answeringPullReqs(c chan PullInfo) {
     }
 }
 
-func (node *Node) processAnswers(polls map[string][]int, ansChan chan PullInfo) string {
+func (node *Node) processAnswers(polls map[string][]int) string {
     counter := make(map[string]int)
+    timeout := make(chan bool, 1)
+    go func() {
+            time.Sleep(5 * time.Second)
+                timeout <- true
+    }()
     for {
         select {
-            case answer := <-ansChan :
+            case answer := <- node.ansChan :
                 pollList, ok := polls[answer.gstr]
                 if ok {
                     counter[answer.gstr] += 1
@@ -415,19 +433,22 @@ func (node *Node) processAnswers(polls map[string][]int, ansChan chan PullInfo) 
                         return answer.gstr
                     }
                 }
+            case <-timeout:
+                return "-2"
+                }
         }
-    }
 }
 
 func (node *Node) pullPhase() string {
     polls := node.sendPullReqs()
     fmt.Println("Sent Pull Reqs for:")
+    node.wg_pull.Done()
+    node.wg_pull.Wait()
     //fmt.Println(polls)
-    pullChan := make(chan PullInfo)
-    ansChan := make(chan PullInfo)
-    go node.routingPullReqs(pullChan, ansChan)
-    go node.answeringPullReqs(pullChan)
-    return node.processAnswers(polls, ansChan)
+    go node.routingPullReqs()
+    go node.answeringPullReqs()
+    time.Sleep(600*time.Millisecond) 
+    return node.processAnswers(polls)
 }
 
 
@@ -508,10 +529,12 @@ func getPollList(cand string, n int, list []int) []int {
 }
 
 
-func Client(port string, nbrs []string, byz int, faults int, gstring string, candStrs []string) {
-    node := Node{name: port, status: "Init", byz: byz, val: gstring, candStrs: candStrs}
+func Client(port string, nbrs []string, byz int, faults int, gstring string, candStrs []string, wg_push *sync.WaitGroup, wg_ans *sync.WaitGroup, wg_pull *sync.WaitGroup, wg *sync.WaitGroup, k *int, t *int) {
+    node := Node{name: port, status: "Init", byz: byz, val: gstring, candStrs: candStrs, wg_push: wg_push, wg_ans: wg_ans, wg_pull: wg_pull, wg: wg}
     var err error
     port = ":" + port
+    node.pullChan = make(chan PullInfo, 10000)
+    node.ansChan = make(chan PullInfo, 10000)
     node.addr, err = net.ResolveTCPAddr("tcp", port)
     checkErr(err)
     tcpAddrNbr := make([]*net.TCPAddr, len(nbrs))
@@ -533,8 +556,9 @@ func Client(port string, nbrs []string, byz int, faults int, gstring string, can
     }
     msg := "My (" + strconv.Itoa(node.addr.Port) + ") initial value is " + node.val
     fmt.Println(msg)
-    node.c = make(chan string)
-    node.listen()
+    node.c = make(chan string, 1000000)
+    node.listen(k)
     time.Sleep(400*time.Millisecond) 
     node.initConsensus(faults)
+    wg.Done()
 }

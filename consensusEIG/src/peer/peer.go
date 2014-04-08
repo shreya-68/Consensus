@@ -34,6 +34,13 @@ func checkErr(err error) {
     }
 }
 
+func checkWriteErr(err error) {
+    if err != nil {
+        fmt.Printf("Fatal write error: %s \n", err)
+        os.Exit(1)
+    }
+}
+
 type EIGNode struct {
     level int
     path  []int
@@ -64,15 +71,8 @@ func (node *Node) accept(listener *net.TCPListener, k *int) {
                 continue
             }
             *k = *k + 1
-            //fmt.Println(*k)
-            var buf [256]byte
-            n, err := conn.Read(buf[0:])
-            checkErr(err)
-            msg := string(buf[0:n])
-            checkErr(err)
-            node.c <- msg
-            conn.Close() 
-            //go node.handleClient(conn)
+            fmt.Println(node.name, *k)
+            go node.handleClient(conn)
         }
 }
 
@@ -90,8 +90,10 @@ func (node *Node) openTCPconn(rcvr *net.TCPAddr) *net.TCPConn {
 
 func (node *Node) write(msg string, conn *net.TCPConn) {
         //fmt.Printf("Writing %s\n", msg)
-        _, err := conn.Write([]byte(msg))
-        checkErr(err)
+        n, err := conn.Write([]byte(msg))
+        if n == len(msg) {
+            checkWriteErr(err)
+        }
 }
 
 func (node *Node) broadcast(msg string) {
@@ -210,24 +212,6 @@ func (node *Node) initRound(roundNum int, t *int) {
     node.broadcast(msg)
 }
 
-
-//func (node *Node) getConsensus() {
-//    count := make(map[int]int)
-//    for _, val := range node.setVal {
-//        count[val] += 1
-//        //fmt.Printf("I am %s. Setval: %d\n", node.name, val)
-//    }
-//    maxVal := 0
-//    var maxKey int
-//    for key, _ := range count {
-//        if count[key] > maxVal {
-//            maxKey = key
-//            maxVal = count[key]
-//        }
-//    }
-//    fmt.Println("The consensus is value ", maxKey)
-//}
-
 func (node *Node) getConsensus(level int) {
     curr := node.root
     stack := []*EIGNode{}
@@ -276,10 +260,10 @@ func (node *Node) initConsensus(faults int, t *int){
         node.wg[i].Done()
         node.wg[i].Wait()
         node.setChildVals()
+        fmt.Println("This round complete", i)
     }
     node.getConsensus(faults)
     fmt.Printf("My %s final value is %d \n", node.name, node.root.newval)
-
 }
 
 func Client(port string, nbrs []string, byz int, faults int, wg []*sync.WaitGroup, wg_done *sync.WaitGroup, k *int, t *int) {
@@ -305,7 +289,7 @@ func Client(port string, nbrs []string, byz int, faults int, wg []*sync.WaitGrou
        node.list = append(node.list, nbr.Port)
     }
     node.list = append(node.list, node.addr.Port)
-    node.c = make(chan string, 10000000)
+    node.c = make(chan string, 100000000)
     node.listen(k)
     time.Sleep(200*time.Millisecond) 
     node.initConsensus(faults, t)

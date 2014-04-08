@@ -6,6 +6,7 @@ import (
     "peer"
     "strconv"
     "sync"
+//    "runtime"
     )
 
 
@@ -66,6 +67,9 @@ func main() {
     wg_views.Add(graph.numNodes)
     wg_tuples.Add(graph.numNodes)
     msgComp := make([]int, graph.numNodes)
+    timeComp := make([]int, graph.numNodes)
+
+    //runtime.GOMAXPROCS(runtime.NumCPU())
     for i := 0; i < graph.numNodes; i++{
         port := strconv.Itoa(9000+i)
         nbrs := make([]string, graph.numNodes-1)
@@ -79,14 +83,21 @@ func main() {
             case i < faults: byz = 1
             default: byz = 0
         }
-        go peer.Client(port, nbrs, byz, faults, wg_stage1, wg_views, wg_tuples, wg_g1, wg_g2, wg_g3, wg_final, wg, &msgComp[i])
+        go peer.Client(port, nbrs, byz, faults, wg_stage1, wg_views, wg_tuples, wg_g1, wg_g2, wg_g3, wg_final, wg, &msgComp[i], &timeComp[i])
     }
     wg.Wait()
     sum := 0
     for _, numMsg := range msgComp {
         sum += numMsg
     }
+    time := 0
+    for _, numR := range timeComp {
+        if time < numR {
+            time = numR
+        }
+    }
     fmt.Println("No. of Msgs sent:", sum)
+    fmt.Println("No. of rounds :", time)
     fmt.Printf("Done!")
     os.Exit(0)
 }

@@ -11,6 +11,8 @@ import (
     "math"
     "strings"
     "sync"
+    "net/http"
+    "runtime"
     )
 
 //Client Node with name, nbr are the first hop neighbours and status is current running status
@@ -33,6 +35,7 @@ type Node struct {
     wg_g2 *sync.WaitGroup
     wg_g3 *sync.WaitGroup
     wg_final *sync.WaitGroup
+    tr *http.Transport
 }
 
 var a = 2
@@ -78,6 +81,15 @@ func checkErr(err error) {
     }
 }
 
+func checkDialErr(name string, err error) {
+    if err != nil {
+        fmt.Println(name, "Dial Error: ", err)
+        fmt.Println("Retrying")
+        time.Sleep(200*time.Millisecond) 
+        os.Exit(1)
+    }
+}
+
 func getPortFromConn(conn net.Conn) int {
     tcpAddr, err := net.ResolveTCPAddr("tcp", conn.LocalAddr().String())
     checkErr(err)
@@ -85,24 +97,33 @@ func getPortFromConn(conn net.Conn) int {
 }
 
 func (node *Node) handleClient(conn net.Conn) {
-    var buf [256]byte
+    defer conn.Close()
+    var buf [2000]byte
     n, err := conn.Read(buf[0:])
+    if n > 1000 {
+        fmt.Println("Size > ", n)
+    }
     checkErr(err)
     msg := string(buf[0:n])
     checkErr(err)
     node.c <- msg
-    conn.Close() 
 }
 
 func (node *Node) accept(listener *net.TCPListener, k *int) {
     for {
             conn, err := listener.Accept()
-            if err != nil {
-                continue
-            }
+            checkErr(err)
+            //if err != nil {
+            //    continue
+            //}
             *k = *k + 1
-            fmt.Println(*k)
+            //if node.name == "9000" {
+            //    fmt.Println(*k)
+            //    fmt.Println(*conn)
+            //}
+            //node.tr.CloseIdleConnections()
             go node.handleClient(conn)
+            conn.Close()
         }
 }
 
@@ -113,13 +134,16 @@ func (node *Node) listen(k *int) {
 }
 
 func (node *Node) openTCPconn(rcvr *net.TCPAddr) *net.TCPConn {
-    conn, err := net.DialTCP("tcp", nil, rcvr)
-    checkErr(err)
-    return conn
+        conn, err := net.DialTCP("tcp", nil, rcvr)
+        checkDialErr(node.name, err)
+        return conn
 }
 
 func (node *Node) write(msg string, conn *net.TCPConn) {
-        _, err := conn.Write([]byte(msg))
+        n, err := conn.Write([]byte(msg))
+        if n > 1000 {
+            fmt.Println(n)
+        }
         checkErr(err)
 }
 
@@ -127,7 +151,8 @@ func (node *Node) broadcast(msg string) {
     for _, nbr := range node.nbr {
         conn := node.openTCPconn(nbr)
         node.write(msg, conn)
-        conn.Close()
+        err := conn.Close()
+        checkErr(err)
     }
 }
 
@@ -646,7 +671,7 @@ func (node *Node) getHighest() int {
     }
 }
 
-func (node *Node) initConsensus() {
+func (node *Node) initConsensus(t *int) {
     var numComm int
     numComm = getNumOfComm(node.numNodes)
     fmt.Printf("the num of committees for %d nodes are %d\n", node.numNodes, numComm)
@@ -662,6 +687,7 @@ func (node *Node) initConsensus() {
 
     //Stage 1: Getting all the committees
     bins := node.implementGradecast(myComm)
+    *t = 3
     views_accept := make(map[int][]int)
     views_adopt := make(map[int][]int)
     for _, bin := range bins {
@@ -677,24 +703,38 @@ func (node *Node) initConsensus() {
     //fmt.Println("Got all views")
     node.wg_s.Done()
     node.wg_s.Wait()
+    runtime.NumGoroutine()
 
 
     //Stage 2: Agreeing on the composition of the smallest
     combos := getCombination(node.list, s_j)
     fmt.Println(len(combos))
-    fmt.Println("CAME here")
     for _, subcomm := range combos {
         if find(subcomm, myPort) == 1 {
             node.subprotocol(views_adopt, views_accept, subcomm, numComm)
+            *t = *t + 1
+            if node.name == "9000" {
+                fmt.Println("New subprotocol")
+            }
+            node.tr.CloseIdleConnections()
+            //fmt.Println(runtime.NumGoroutine())
+            time.Sleep(100*time.Millisecond) 
+
         }
         //fmt.Println("INDEX:", i)
     }
+    *t = (*t)*(len(views_accept) + len(views_adopt))
     node.wg_v.Done()
     node.wg_v.Wait()
 
+    node.tr.CloseIdleConnections()
+    runtime.NumGoroutine()
+
+    fmt.Println("CAME here")
     tuples := node.decide(numComm)
     //fmt.Println("PRINTING TUPLES", tuples)
     node.sendTuples(tuples)
+    *t = *t + 1
     time.Sleep(20*time.Millisecond) 
     node.wg_t.Done()
     node.wg_t.Wait()
@@ -744,7 +784,7 @@ func (node *Node) initConsensus() {
     }
     //fmt.Println("PRINTING COMMITTEES", committees)
     binNum, binMem := getLightestBin(committees)
-    fmt.Println(binNum, binMem)
+    fmt.Println("Printing lightest bin", node.name, binNum, binMem)
     get := 0
     if find(binMem, myPort) == 1 {
         num := rand.Intn(100)
@@ -760,6 +800,7 @@ func (node *Node) initConsensus() {
             get = 1
         }
     }
+    *t = *t + 1
     node.wg_final.Done()
     node.wg_final.Wait()
     var consensus int
@@ -801,8 +842,11 @@ func initVal() int{
 }
 
 
-func Client(port string, nbrs []string, byz int, faults int, wg_stage1 *sync.WaitGroup, wg_views *sync.WaitGroup, wg_tuples *sync.WaitGroup, wg_g1 *sync.WaitGroup, wg_g2 *sync.WaitGroup, wg_g3 *sync.WaitGroup, wg_final *sync.WaitGroup, wg *sync.WaitGroup, k *int) {
+func Client(port string, nbrs []string, byz int, faults int, wg_stage1 *sync.WaitGroup, wg_views *sync.WaitGroup, wg_tuples *sync.WaitGroup, wg_g1 *sync.WaitGroup, wg_g2 *sync.WaitGroup, wg_g3 *sync.WaitGroup, wg_final *sync.WaitGroup, wg *sync.WaitGroup, k *int, t *int) {
     node := Node{name: port, status: "Init", byz: byz, numFaults: faults, wg_s: wg_stage1, wg_v: wg_views, wg_t: wg_tuples, wg_g1: wg_g1, wg_g2: wg_g2, wg_g3: wg_g3, wg_final: wg_final}
+    tr := &http.Transport{MaxIdleConnsPerHost: 40000}
+    tr.CloseIdleConnections()
+    node.tr = tr
     var err error
     port = ":" + port
     node.addr, err = net.ResolveTCPAddr("tcp", port)
@@ -823,10 +867,10 @@ func Client(port string, nbrs []string, byz int, faults int, wg_stage1 *sync.Wai
     node.numNodes = len(node.list)
     node.setVal = append(node.setVal, node.val)
     msg := "My (" + strconv.Itoa(node.addr.Port) + ") initial value is " + strconv.Itoa(node.val)
-    node.c = make(chan string, 500000)
+    node.c = make(chan string, 5000000)
     fmt.Println(msg)
     node.listen(k)
     time.Sleep(200*time.Millisecond) 
-    node.initConsensus()
+    node.initConsensus(t)
     wg.Done()
 }

@@ -25,7 +25,7 @@ type Graph struct {
 
 var graph Graph
 
-var c = 2
+var c = 1
 
 func checkErr(err error) {
     if err != nil {
@@ -118,9 +118,14 @@ func main() {
     }
     wg.Wait()
     sum := 0
-    for _, numMsg := range msgComp {
-        sum += numMsg
+    maxMsg := 0
+    for i, numMsg := range msgComp {
+        if maxMsg < numMsg {
+            maxMsg = numMsg
+        }
+        fmt.Println(i, " No. of Msgs sent:", numMsg)
     }
+    sum = maxMsg*graph.numNodes
     time := 0
     for _, numR := range timeComp {
         if time < numR {

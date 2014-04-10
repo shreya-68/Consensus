@@ -34,7 +34,7 @@ type Node struct {
     wg *sync.WaitGroup
 }
 
-var c = 2
+var c = 1
 
 type PullInfo struct {
     typ string
@@ -242,7 +242,7 @@ func getGstring(n int) string {
     return gstring
 }
 
-func (node *Node) sendPullReqs() map[string][]int {
+func (node *Node) sendPullReqs(t *int) map[string][]int {
     polls := make(map[string][]int)
     for _, s_x := range node.setVal {
         rsx := getGstring(len(node.list))
@@ -252,6 +252,7 @@ func (node *Node) sendPullReqs() map[string][]int {
         msgPull := "PULL:" + node.name + ":" + s_x + ":" + rsx
         node.selectiveBroadcast(msgPoll, pollList)
         node.selectiveBroadcast(msgPull, pullQuorum)
+        *t = *t + 2
         polls[s_x] = pollList
     }
     return polls
@@ -320,6 +321,7 @@ func (node *Node) routingPullReqs() {
                             //fmt.Printf("I am %d, GSTRING IS %s, X is %d\n", node.addr.Port, pullReq.gstr, pullReq.origFrom)
                             //fmt.Printf("count %d, len/2 %d\n", counter[index].count, len(pullQuoX)/2)
                             if counter[index].count > (len(pullQuoX)/2 - 1) {
+                                //if 1 == 1 {
                                 msgPoll := "POLL2:" + node.name + ":" + strconv.Itoa(pullReq.origFrom) + ":" + pullReq.gstr + ":" + pullReq.randstr
                                 node.selectiveBroadcast(msgPoll, []int{pullReq.to})
                                 counter[index].count = -10000
@@ -327,7 +329,6 @@ func (node *Node) routingPullReqs() {
 
                         }
                     case pullReq.typ == "ANSWER" : node.ansChan <- pullReq
-                                fmt.Println("Received ANSWER")
                     default: node.pullChan <- pullReq
                 }
         }
@@ -420,12 +421,13 @@ func (node *Node) processAnswers(polls map[string][]int) string {
     counter := make(map[string]int)
     timeout := make(chan bool, 1)
     go func() {
-            time.Sleep(5 * time.Second)
+            time.Sleep(14 * time.Second)
                 timeout <- true
     }()
     for {
         select {
             case answer := <- node.ansChan :
+                fmt.Println(node.name, "Received ANSWER")
                 pollList, ok := polls[answer.gstr]
                 if ok {
                     counter[answer.gstr] += 1
@@ -439,27 +441,28 @@ func (node *Node) processAnswers(polls map[string][]int) string {
         }
 }
 
-func (node *Node) pullPhase() string {
-    polls := node.sendPullReqs()
+func (node *Node) pullPhase(t *int) string {
+    polls := node.sendPullReqs(t)
     fmt.Println("Sent Pull Reqs for:")
     node.wg_pull.Done()
     node.wg_pull.Wait()
     //fmt.Println(polls)
     go node.routingPullReqs()
+    time.Sleep(10*time.Second) 
     go node.answeringPullReqs()
-    time.Sleep(600*time.Millisecond) 
+    *t = *t + 2
+    time.Sleep(10*time.Second) 
     return node.processAnswers(polls)
 }
 
 
-func (node *Node) initConsensus(faults int){
+func (node *Node) initConsensus(faults int, t *int){
     fmt.Println("Starting Push phase.")
     node.pushPhase()
-    time.Sleep(300*time.Millisecond) 
+    *t = *t + 1
     fmt.Println("Starting Pull phase.")
-    conVal :=  node.pullPhase()
+    conVal :=  node.pullPhase(t)
     fmt.Printf("My %s consensus value is %s\n", node.name, conVal)
-    time.Sleep(300*time.Millisecond) 
 }
 
 func getLog(n int) int {
@@ -533,8 +536,8 @@ func Client(port string, nbrs []string, byz int, faults int, gstring string, can
     node := Node{name: port, status: "Init", byz: byz, val: gstring, candStrs: candStrs, wg_push: wg_push, wg_ans: wg_ans, wg_pull: wg_pull, wg: wg}
     var err error
     port = ":" + port
-    node.pullChan = make(chan PullInfo, 10000)
-    node.ansChan = make(chan PullInfo, 10000)
+    node.pullChan = make(chan PullInfo, 1000000)
+    node.ansChan = make(chan PullInfo, 1000000)
     node.addr, err = net.ResolveTCPAddr("tcp", port)
     checkErr(err)
     tcpAddrNbr := make([]*net.TCPAddr, len(nbrs))
@@ -551,14 +554,14 @@ func Client(port string, nbrs []string, byz int, faults int, gstring string, can
     }
     node.list = append(node.list, node.addr.Port)
     if node.byz == 1 {
-            node.val = "11111111"
-            //node.val = getGstring(len(node.list))
+            //node.val = "11111111"
+            node.val = getGstring(len(node.list))
     }
     msg := "My (" + strconv.Itoa(node.addr.Port) + ") initial value is " + node.val
     fmt.Println(msg)
     node.c = make(chan string, 1000000)
     node.listen(k)
     time.Sleep(400*time.Millisecond) 
-    node.initConsensus(faults)
+    node.initConsensus(faults, t)
     wg.Done()
 }

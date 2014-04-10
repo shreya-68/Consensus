@@ -12,7 +12,7 @@ import (
     "strings"
     "sync"
     "net/http"
-    "runtime"
+//    "runtime"
     )
 
 //Client Node with name, nbr are the first hop neighbours and status is current running status
@@ -81,6 +81,13 @@ func checkErr(err error) {
     }
 }
 
+func checkWriteErr(err error) {
+    if err != nil {
+        fmt.Printf("Write Error: %s \n", err)
+        os.Exit(1)
+    }
+}
+
 func checkDialErr(name string, err error) {
     if err != nil {
         fmt.Println(name, "Dial Error: ", err)
@@ -97,33 +104,27 @@ func getPortFromConn(conn net.Conn) int {
 }
 
 func (node *Node) handleClient(conn net.Conn) {
-    defer conn.Close()
-    var buf [2000]byte
+    var buf [8000]byte
     n, err := conn.Read(buf[0:])
     if n > 1000 {
         fmt.Println("Size > ", n)
     }
-    checkErr(err)
+    checkWriteErr(err)
     msg := string(buf[0:n])
     checkErr(err)
     node.c <- msg
+    conn.Close()
 }
 
 func (node *Node) accept(listener *net.TCPListener, k *int) {
     for {
             conn, err := listener.Accept()
-            checkErr(err)
-            //if err != nil {
-            //    continue
-            //}
+            if err != nil {
+                continue
+            }
             *k = *k + 1
-            //if node.name == "9000" {
-            //    fmt.Println(*k)
-            //    fmt.Println(*conn)
-            //}
             //node.tr.CloseIdleConnections()
             go node.handleClient(conn)
-            conn.Close()
         }
 }
 
@@ -135,7 +136,7 @@ func (node *Node) listen(k *int) {
 
 func (node *Node) openTCPconn(rcvr *net.TCPAddr) *net.TCPConn {
         conn, err := net.DialTCP("tcp", nil, rcvr)
-        checkDialErr(node.name, err)
+        checkErr(err)
         return conn
 }
 
@@ -144,7 +145,7 @@ func (node *Node) write(msg string, conn *net.TCPConn) {
         if n > 1000 {
             fmt.Println(n)
         }
-        checkErr(err)
+        checkWriteErr(err)
 }
 
 func (node *Node) broadcast(msg string) {
@@ -152,16 +153,16 @@ func (node *Node) broadcast(msg string) {
         conn := node.openTCPconn(nbr)
         node.write(msg, conn)
         err := conn.Close()
-        checkErr(err)
+        checkWriteErr(err)
     }
 }
 
 func getNumOfComm(n int) int {
-    return int(float64(n)/math.Log(float64(n)))
+    return int(float64(n)/math.Log2(float64(n)))
 }
 
 func getLog(n int) int {
-    return int(math.Log(float64(n)))
+    return int(math.Log2(float64(n)))
 }
 
 func (node *Node) getGradecast1Store() map[int][]int{
@@ -322,7 +323,9 @@ func (node *Node) gradecastStep2(binStore map[int][]int) map[int]int {
         msg += ":" + strconv.Itoa(key) + ","
     }
     msg = strings.TrimRight(msg, ",")
-    node.broadcast(msg)
+    if msg != "" {
+        node.broadcast(msg)
+    }
     time.Sleep(20*time.Millisecond) 
     node.wg_g2.Done()
     node.wg_g2.Wait()
@@ -359,7 +362,9 @@ func (node *Node) gradecastStep3(portStore map[int]int, myBin int) []Bin {
         msg += strconv.Itoa(key) + ":" + strconv.Itoa(value) + ","
     }
     msg = strings.TrimRight(msg, ",")
-    node.broadcast(msg)
+    if msg != "" {
+        node.broadcast(msg)
+    }
     time.Sleep(20*time.Millisecond) 
     node.wg_g3.Done()
     node.wg_g3.Wait()
@@ -431,47 +436,51 @@ func (node *Node) getTuples() []Tuple{
     }
 }
 
-func (node *Node) getIntersection() []View {
+func (node *Node) getIntersection(l *int) []View {
     allViews := make([]View, 0)
     for {
         select {
             case entry := <-node.c :
-                comms := strings.Split(entry, ",")
-                if len(comms) == 4 {
-                    //comms[0] is TYPE
-                    //comms[1] is from
-                    //comms[2] is subcomm
-                    //comms[3] is commNum:view.view
-                    subcomm := make([]int, 0)
-                    mems := strings.Split(comms[2], ".")
-                    for _, mem := range mems {
-                        x, _ := strconv.Atoi(mem)
-                        subcomm = append(subcomm, x)
-                    }
-                    arr := strings.Split(comms[3], ":")
-                    num, _ := strconv.Atoi(arr[0])
-                    members := strings.Split(arr[1], ".")
-                    found := 0
-                    for i, eachView := range allViews {
-                        if (equal(eachView.subcomm, subcomm) == 1) && (eachView.commNum == num) && (eachView.typ == comms[0]) {
-                            found = 1
-                            for _, member := range members {
-                                port, err := strconv.Atoi(member)
-                                checkErr(err)
-                                if (find(eachView.myView, port) == 0) {
-                                    allViews[i].myView = append(allViews[i].myView, port)
+                click := strings.Split(entry, "!")
+                *l = *l + len(click)
+                for _, split := range click {
+                    comms := strings.Split(split, ",")
+                    if len(comms) == 4 {
+                        //comms[0] is TYPE
+                        //comms[1] is from
+                        //comms[2] is subcomm
+                        //comms[3] is commNum:view.view
+                        subcomm := make([]int, 0)
+                        mems := strings.Split(comms[2], ".")
+                        for _, mem := range mems {
+                            x, _ := strconv.Atoi(mem)
+                            subcomm = append(subcomm, x)
+                        }
+                        arr := strings.Split(comms[3], ":")
+                        num, _ := strconv.Atoi(arr[0])
+                        members := strings.Split(arr[1], ".")
+                        found := 0
+                        for i, eachView := range allViews {
+                            if (equal(eachView.subcomm, subcomm) == 1) && (eachView.commNum == num) && (eachView.typ == comms[0]) {
+                                found = 1
+                                for _, member := range members {
+                                    port, err := strconv.Atoi(member)
+                                    checkErr(err)
+                                    if (find(eachView.myView, port) == 0) {
+                                        allViews[i].myView = append(allViews[i].myView, port)
+                                    }
                                 }
+                                break
                             }
-                            break
                         }
-                    }
-                    if found == 0 {
-                        newView := View{typ: comms[0], subcomm:subcomm, commNum: num }
-                        for _, member := range members {
-                            port, _ := strconv.Atoi(member)
-                            newView.myView = append(newView.myView, port)
+                        if found == 0 {
+                            newView := View{typ: comms[0], subcomm:subcomm, commNum: num }
+                            for _, member := range members {
+                                port, _ := strconv.Atoi(member)
+                                newView.myView = append(newView.myView, port)
+                            }
+                            allViews = append(allViews, newView)
                         }
-                        allViews = append(allViews, newView)
                     }
                 }
             default:
@@ -488,6 +497,7 @@ func (node *Node) sendComposition(typ string, acceptee map[int][]int, subcomm []
     }
     submsg = strings.TrimRight(submsg, ".")
     submsg += ","
+    finalMsg := ""
     for num, list := range acceptee {
         msg := submsg
         msg += strconv.Itoa(num) + ":"
@@ -495,8 +505,12 @@ func (node *Node) sendComposition(typ string, acceptee map[int][]int, subcomm []
             msg += strconv.Itoa(accepted) + "."
         }
         msg = strings.TrimRight(msg, ".")
+        finalMsg = finalMsg + msg + "!"
         //fmt.Println(msg, subcomm)
-        node.selectiveBroadcast(msg, subcomm)
+    }
+    finalMsg= strings.TrimRight(finalMsg, "!")
+    if finalMsg != "" {
+        node.selectiveBroadcast(finalMsg, subcomm)
     }
 }
 
@@ -505,8 +519,8 @@ func (node *Node) subprotocol(adoptee map[int][]int, acceptee map[int][]int, sub
     node.sendComposition("ACCEPT", acceptee, subcomm, numComm)
 }
 
-func (node *Node) decide(numComm int) []Tuple {
-    allViews := node.getIntersection()
+func (node *Node) decide(numComm int, l *int) []Tuple {
+    allViews := node.getIntersection(l)
     //fmt.Println("PRINTING all views", allViews)
     allTuples := make([]Tuple, 0)
     allAccepts := make([]View, 0)
@@ -572,7 +586,9 @@ func (node *Node) sendTuples(allTuples []Tuple) {
         msg += "/"
     }
     msg = strings.TrimRight(msg, "/")
-    node.broadcast(msg)
+    if msg != "" {
+        node.broadcast(msg)
+    }
 
 }
 
@@ -671,17 +687,15 @@ func (node *Node) getHighest() int {
     }
 }
 
-func (node *Node) initConsensus(t *int) {
+func (node *Node) initConsensus(t *int, l *int) {
     var numComm int
     numComm = getNumOfComm(node.numNodes)
     fmt.Printf("the num of committees for %d nodes are %d\n", node.numNodes, numComm)
     myComm := getRandComm(numComm)
     fmt.Printf("I am %s. Setval: %d\n", node.name, myComm)
     var s_j int 
-    s_j = numComm*3/4
-    //if len(node.list) > 16 {
-    //    s_j = numComm*3/8
-    //}
+    s_j = 4
+    //s_j = getLog(node.numNodes)*3/4
     fmt.Println("SJ:", s_j, numComm)
     myPort, _ := strconv.Atoi(node.name)
 
@@ -703,20 +717,19 @@ func (node *Node) initConsensus(t *int) {
     //fmt.Println("Got all views")
     node.wg_s.Done()
     node.wg_s.Wait()
-    runtime.NumGoroutine()
 
 
     //Stage 2: Agreeing on the composition of the smallest
     combos := getCombination(node.list, s_j)
-    fmt.Println(len(combos))
+    fmt.Println("Length", len(combos))
     for _, subcomm := range combos {
         if find(subcomm, myPort) == 1 {
             node.subprotocol(views_adopt, views_accept, subcomm, numComm)
             *t = *t + 1
-            if node.name == "9000" {
-                fmt.Println("New subprotocol")
-            }
-            node.tr.CloseIdleConnections()
+            //if node.name == "9000" {
+            //    fmt.Println("New subprotocol")
+            //}
+            //node.tr.CloseIdleConnections()
             //fmt.Println(runtime.NumGoroutine())
             time.Sleep(100*time.Millisecond) 
 
@@ -727,11 +740,8 @@ func (node *Node) initConsensus(t *int) {
     node.wg_v.Done()
     node.wg_v.Wait()
 
-    node.tr.CloseIdleConnections()
-    runtime.NumGoroutine()
 
-    fmt.Println("CAME here")
-    tuples := node.decide(numComm)
+    tuples := node.decide(numComm, l)
     //fmt.Println("PRINTING TUPLES", tuples)
     node.sendTuples(tuples)
     *t = *t + 1
@@ -844,9 +854,9 @@ func initVal() int{
 
 func Client(port string, nbrs []string, byz int, faults int, wg_stage1 *sync.WaitGroup, wg_views *sync.WaitGroup, wg_tuples *sync.WaitGroup, wg_g1 *sync.WaitGroup, wg_g2 *sync.WaitGroup, wg_g3 *sync.WaitGroup, wg_final *sync.WaitGroup, wg *sync.WaitGroup, k *int, t *int) {
     node := Node{name: port, status: "Init", byz: byz, numFaults: faults, wg_s: wg_stage1, wg_v: wg_views, wg_t: wg_tuples, wg_g1: wg_g1, wg_g2: wg_g2, wg_g3: wg_g3, wg_final: wg_final}
-    tr := &http.Transport{MaxIdleConnsPerHost: 40000}
-    tr.CloseIdleConnections()
-    node.tr = tr
+    //tr := &http.Transport{MaxIdleConnsPerHost: 40000}
+    //tr.CloseIdleConnections()
+    //node.tr = tr
     var err error
     port = ":" + port
     node.addr, err = net.ResolveTCPAddr("tcp", port)
@@ -871,6 +881,8 @@ func Client(port string, nbrs []string, byz int, faults int, wg_stage1 *sync.Wai
     fmt.Println(msg)
     node.listen(k)
     time.Sleep(200*time.Millisecond) 
-    node.initConsensus(t)
+    var l int
+    node.initConsensus(t, &l)
+    *k = *k + l
     wg.Done()
 }

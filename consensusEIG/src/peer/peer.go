@@ -105,11 +105,12 @@ func (node *Node) broadcast(msg string) {
     }
 }
 
-func (node *Node) setChildVals() {
+func (node *Node) setChildVals(l *int) {
     for {
         select {
             case entry := <-node.c:
                 eachNode := strings.Split(entry, ",")
+                *l = *l + len(eachNode)
                 for _, each := range eachNode {
                     pathVal := strings.Split(each, ":")
                     if len(pathVal) == 2 {
@@ -249,7 +250,7 @@ func (node *Node) getConsensus(level int) {
     }
 }
 
-func (node *Node) initConsensus(faults int, t *int){
+func (node *Node) initConsensus(faults int, t *int, l *int){
     defer func() {
         if r := recover(); r != nil {
             fmt.Println("Recovered", r)
@@ -259,7 +260,7 @@ func (node *Node) initConsensus(faults int, t *int){
         node.initRound(i, t)
         node.wg[i].Done()
         node.wg[i].Wait()
-        node.setChildVals()
+        node.setChildVals(l)
         fmt.Println("This round complete", i)
     }
     node.getConsensus(faults)
@@ -289,9 +290,12 @@ func Client(port string, nbrs []string, byz int, faults int, wg []*sync.WaitGrou
        node.list = append(node.list, nbr.Port)
     }
     node.list = append(node.list, node.addr.Port)
-    node.c = make(chan string, 100000000)
+    node.c = make(chan string, 10000000)
     node.listen(k)
     time.Sleep(200*time.Millisecond) 
-    node.initConsensus(faults, t)
+    var l int
+    node.initConsensus(faults, t, &l)
+    fmt.Println(l)
+    *k = *k + l
     wg_done.Done()
 }

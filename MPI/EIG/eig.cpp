@@ -13,10 +13,12 @@
 #include <set>
 #include <utility>
 #include <unistd.h>
+#include "mpi.h"
+
+#define MAX 4
 
 using namespace std;
 
-# include "mpi.h"
 
 // stores the value log(size)
 int quorum_size;
@@ -31,6 +33,9 @@ int has_decided = 0;
 int num_failures;
 
 int default_value = 1;
+
+int byzantine;
+int second_value;
 
 
 
@@ -69,15 +74,21 @@ int **temp_suspect_set;
 int setMyValue() {
     sleep(rank*2);
     srand(time(NULL));
-    myvalue = (rand() % 4) + 1;
+    myvalue = (rand() % MAX) + 1;
     return 1;
 }
 
 int initFirstRound() {
+    cout<<"Initiating first round\n";
     MPI_Request req;
     for(int i = 0; i < size; i++) {
         if(i != rank) {
-          MPI_Isend(&myvalue, 1, MPI_INT, i, 1, MPI_COMM_WORLD, &req);
+            if(!byzantine) {
+                MPI_Isend(&myvalue, 1, MPI_INT, i, 1, MPI_COMM_WORLD, &req);
+            } else if(byzantine && i <= size/2) {
+                MPI_Isend(&myvalue, 1, MPI_INT, i, 1, MPI_COMM_WORLD, &req);
+            } else
+                MPI_Isend(&second_value, 1, MPI_INT, i, 1, MPI_COMM_WORLD, &req);
         }
     }
 
@@ -97,11 +108,14 @@ int initFirstRound() {
             newChild->val = myvalue;
         else
             newChild->val = recd_msg;
+        printf("I %d received value %d from process %d\n", rank, newChild->val, i);
     }
+    cout<<"Completing first round\n";
     return 1;
 }
 
 int initSecondRound() {
+    cout<<"Initiating second round\n";
     MPI_Request req;
     int *message = new int[size];
     for(vector<Node*>::iterator it = root->children.begin();
@@ -144,6 +158,8 @@ int initSecondRound() {
                 newChild->parent = *it;
                 (*it)->children.push_back(newChild);
                 newChild->cval = recd_msg[next_recd_val];
+                if (rank == 0)
+                    printf("Received values %d from process %d about process %d,%d\n", newChild->cval, i, *((*it)->label), next_recd_val);
             }
         }
     }
@@ -161,6 +177,7 @@ int initSecondRound() {
             byz_set.insert(*((*it_parent)->label));
         }
     }
+    cout<<"Completing second round\n";
     return 1;
 }
 
@@ -194,6 +211,7 @@ int *convertSetToArray(set<int> setter) {
 }
 
 int initThirdRound() {
+    cout<<"Initiating third round\n";
     MPI_Request req;
     int **message;
     message = new int*[size+1];
@@ -263,6 +281,7 @@ int initThirdRound() {
             }
         }
     }
+    cout<<"Completing third round\n";
     return 1;
 }
 
@@ -323,7 +342,8 @@ int find(int i, vector<int> label) {
 
 int getCVal(vector<int> label, int level) {
     if(level == 2) {
-        // TODO
+        Node *parent = root->children[label[0]];
+        return parent->children[label[1]]->cval;
     } else {
         int j = label[label.size()-3];
         int k = label[label.size()-2];
@@ -336,7 +356,15 @@ int getCVal(vector<int> label, int level) {
 
 int getNewVal(vector<int> label, int level) {
     if(level == num_failures + 1) {
-        // TODO
+        if (label.size() >= 2) {
+            int l = label[label.size()-1];
+            int k = label[label.size()-2];
+            if(temp_suspect_set[l][k] == 1) {
+                return -1;
+            } else {
+                return 1;
+            }
+        }
     }
     int count = 0;
     map<int, int> cval_count;
@@ -413,6 +441,14 @@ int main(int argc, char *argv[]) {
     root->level = 0;
     root->val = -1;
 
+    if (rank >= size - num_failures) {
+        byzantine = 1;
+        second_value = (myvalue + 1) % MAX;
+    } else {
+        byzantine = 0;
+    }
+
+
     //----------------FIRST ROUND----------------------
     initFirstRound();
 
@@ -420,16 +456,25 @@ int main(int argc, char *argv[]) {
     MPI_Barrier(MPI_COMM_WORLD);
 
     //----------------SECOND ROUND----------------------
-    initSecondRound();
+    if (num_failures + 1 >= 2) {
+        initSecondRound();
+        // To ensure all nodes have completed the push phase
+        MPI_Barrier(MPI_COMM_WORLD);
+    }
 
     temp_suspect_set = new int*[size];
 
-    initThirdRound();
-
-    convertToSet();
+    if (num_failures + 1 >= 3) {
+        initThirdRound();
+        convertToSet();
+        // To ensure all nodes have completed the push phase
+        MPI_Barrier(MPI_COMM_WORLD);
+    }
 
     for(int round = 4; round <= num_failures + 1; round++) {
         initRoundR(round);
+        // To ensure all nodes have completed the push phase
+        MPI_Barrier(MPI_COMM_WORLD);
     }
 
     MPI_Finalize();

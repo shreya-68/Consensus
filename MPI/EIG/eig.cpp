@@ -14,10 +14,26 @@
 #include <utility>
 #include <unistd.h>
 #include "mpi.h"
+#include <iostream>
 
-#define MAX 4
+#define MAX 2
 
 using namespace std;
+using std::vector;
+using std::ostream;
+
+template<typename T>
+ostream& operator<< (ostream& out, const vector<T>& v) {
+        out << "[";
+            size_t last = v.size() - 1;
+                for(size_t i = 0; i < v.size(); ++i) {
+                            out << v[i];
+                                    if (i != last) 
+                                                    out << ", ";
+                                        }
+                    out << "]";
+                        return out;
+}
 
 
 // stores the value log(size)
@@ -36,15 +52,6 @@ int default_value = 1;
 
 int byzantine;
 int second_value;
-
-
-
-// TAGS: 1 - Push message
-//       2 - pull query
-//       3 - Fw1
-//       4 - Fw2
-//       5 - Poll
-//       6 - Answer
 
 class Node {
  public:
@@ -74,18 +81,18 @@ int **temp_suspect_set;
 int setMyValue() {
     sleep(rank*2);
     srand(time(NULL));
-    myvalue = (rand() % MAX) + 1;
+    myvalue = (rand() % MAX) + 3;
     return 1;
 }
 
 int initFirstRound() {
-    cout<<"Initiating first round\n";
+    //cout<<"Initiating first round\n";
     MPI_Request req;
     for(int i = 0; i < size; i++) {
         if(i != rank) {
             if(!byzantine) {
                 MPI_Isend(&myvalue, 1, MPI_INT, i, 1, MPI_COMM_WORLD, &req);
-            } else if(byzantine && i <= size/2) {
+            } else if(i <= size/2) {
                 MPI_Isend(&myvalue, 1, MPI_INT, i, 1, MPI_COMM_WORLD, &req);
             } else
                 MPI_Isend(&second_value, 1, MPI_INT, i, 1, MPI_COMM_WORLD, &req);
@@ -108,9 +115,9 @@ int initFirstRound() {
             newChild->val = myvalue;
         else
             newChild->val = recd_msg;
-        printf("I %d received value %d from process %d\n", rank, newChild->val, i);
+        //printf("I %d received value %d from process %d\n", rank, newChild->val, i);
     }
-    cout<<"Completing first round\n";
+    //cout<<"Completing first round\n";
     return 1;
 }
 
@@ -121,11 +128,13 @@ int initSecondRound() {
     for(vector<Node*>::iterator it = root->children.begin();
             it != root->children.end(); it++) {
         message[*((*it)->label)] = (*it)->val;
+        //if(rank == 0)
+        //    printf("sending value %d from process %d, %d\n", (*it)->val, *((*it)->label), rank);
     }
 
     for(int i = 0; i < size; i++) {
         if(i != rank) {
-          MPI_Isend(message, size, MPI_INT, i, 2, MPI_COMM_WORLD, &req);
+            MPI_Isend(message, size, MPI_INT, i, 2, MPI_COMM_WORLD, &req);
         }
     }
 
@@ -158,8 +167,8 @@ int initSecondRound() {
                 newChild->parent = *it;
                 (*it)->children.push_back(newChild);
                 newChild->cval = recd_msg[next_recd_val];
-                if (rank == 0)
-                    printf("Received values %d from process %d about process %d,%d\n", newChild->cval, i, *((*it)->label), next_recd_val);
+                //if(rank == 1 && i == 0)
+                //    printf("I %d setting value %d received for child %d,%d\n", rank, recd_msg[next_recd_val], *((*it)->label), i);
             }
         }
     }
@@ -175,6 +184,8 @@ int initSecondRound() {
         }
         if (count < size - num_failures) {
             byz_set.insert(*((*it_parent)->label));
+            if(rank == 0)
+                printf("My byz set includes %d\n", *((*it_parent)->label));
         }
     }
     cout<<"Completing second round\n";
@@ -203,7 +214,7 @@ int addToEchoesCheck(int reporter, int reportee, int suspect_set[]) {
 }
 
 int *convertSetToArray(set<int> setter) {
-    int *convertee = new int[setter.size()];
+    int *convertee = new int[size];
     for(set<int>::iterator node = setter.begin(); node != setter.end(); node++) {
         convertee[*node] = 1;
     }
@@ -213,24 +224,36 @@ int *convertSetToArray(set<int> setter) {
 int initThirdRound() {
     cout<<"Initiating third round\n";
     MPI_Request req;
-    int **message;
-    message = new int*[size+1];
+    int **msg = new int*[size];
+    int *message;
     int node_num = 0;
     for(vector<Node*>::iterator it_parent = root->children.begin();
-            it_parent != root->children.end(); it_parent++, node_num++) {
-        node_num = *((*it_parent)->label) + 1;
-        message[node_num] = new int[size];
+            it_parent != root->children.end(); it_parent++) {
+        node_num = *((*it_parent)->label);
+        message = new int[size];
         for(vector<Node*>::iterator it_child = (*it_parent)->children.begin();
                 it_child != (*it_parent)->children.end(); it_child++) {
-            message[node_num][*((*it_child)->label + 1)] = (*it_child)->cval;
+            message[*((*it_child)->label + 1)] = (*it_child)->cval;
+        }
+        msg[node_num] = message;
+        for(int i = 0; i < size; i++) {
+            if(i != rank) {
+              MPI_Isend(message, size, MPI_INT, i, node_num, MPI_COMM_WORLD, &req);
+            }
         }
     }
 
-    message[0] = convertSetToArray(byz_set);
+    message = convertSetToArray(byz_set);
+    if(rank == 0) {
+        for(int i = 0; i < size; i++) {
+            if(message[i] == 1)
+                printf("My byz array has: %d\n", i);
+        }
+    }
 
     for(int i = 0; i < size; i++) {
         if(i != rank) {
-          MPI_Isend(message, (size+1)*size, MPI_INT, i, 3, MPI_COMM_WORLD, &req);
+          MPI_Isend(message, size, MPI_INT, i, size+1, MPI_COMM_WORLD, &req);
         }
     }
 
@@ -238,38 +261,48 @@ int initThirdRound() {
     MPI_Barrier(MPI_COMM_WORLD);
 
 
-    int **recd_msg;
-    recd_msg = new int*[size+1];
-    for(int i = 0; i < size; i++) {
-        if(i != rank) {
-            MPI_Irecv(recd_msg, (size+1)*size, MPI_INT, i, 3, MPI_COMM_WORLD, &req);
-        } else {
-            recd_msg = message;
-        }
-        int parent_num = 0;
-        int child_num = 0;
-        for(vector<Node*>::iterator it_parent = root->children.begin();
-                it_parent != root->children.end(); it_parent++, node_num++) {
+    int *recd_msg;
+    int child_num = 0;
+    for(vector<Node*>::iterator it_parent = root->children.begin();
+            it_parent != root->children.end(); it_parent++) {
+        node_num = *((*it_parent)->label);
+        for(int i = 0; i < size; i++) {
+            if(i != rank) {
+                recd_msg = new int[size];
+                MPI_Irecv(recd_msg, size, MPI_INT, i, node_num, MPI_COMM_WORLD, &req);
+            } else {
+                recd_msg = msg[node_num];
+            }
             for(vector<Node*>::iterator it_child = (*it_parent)->children.begin();
                     it_child != (*it_parent)->children.end(); it_child++) {
-                parent_num = *((*it_child)->label);
                 child_num = *((*it_child)->label + 1);
-                if (parent_num != i || child_num != i) {
+                if (node_num != i || child_num != i) {
                     Node* newChild = new Node();
                     newChild->level  = 3;
                     newChild->label = new int[3];
-                    *(newChild->label) = parent_num;
+                    *(newChild->label) = node_num;
                     *(newChild->label + 1) = child_num; 
                     *(newChild->label + 2) = i; 
                     newChild->parent = *it_child;
                     (*it_child)->children.push_back(newChild);
-                    newChild->cval = recd_msg[parent_num+1][child_num];
+                    newChild->cval = recd_msg[child_num];
+                    //if(i == 1 && rank == 2 && child_num == 0) {
+                    //    printf("Value is %d, for node %d, %d, %d\n", recd_msg[child_num], node_num, child_num, i);
+                    //}
                     if (newChild->cval == (*it_child)->cval)
                         (*it_child)->count++;
                 }
             }
         }
-        temp_suspect_set[i] = recd_msg[0];
+    }
+    for(int i = 0; i < size; i++) {
+        if(i != rank) {
+            recd_msg = new int[size];
+            MPI_Irecv(recd_msg, size, MPI_INT, i, size+1, MPI_COMM_WORLD, &req);
+        } else {
+            recd_msg = message;
+        }
+        temp_suspect_set[i] = recd_msg;
         addToSuspects(i, temp_suspect_set[i]);
     }
     for(vector<Node*>::iterator it_parent = root->children.begin();
@@ -278,23 +311,32 @@ int initThirdRound() {
                 it_child != (*it_parent)->children.end(); it_child++) {
             if ((*it_child)->count < size - num_failures) {
                 byz_set.insert(*((*it_child)->label + 1));
+                if(rank == 0)
+                    printf("My byz set includes %d\n", *((*it_child)->label + 1));
             }
         }
     }
-    cout<<"Completing third round\n";
+    //printf("Completing third round\n");
     return 1;
 }
 
 int initRoundR(int round) {
     MPI_Request req;
-    int **message;
-    message = new int*[size+1];
-    message = temp_suspect_set;
-    message[size+1] = convertSetToArray(byz_set);
+    printf("Initiating round %d\n", round);
+    int *message;
 
+    for(int suspector = 0; suspector < size; suspector++) {
+        for(int j = 0; j < size; j++) {
+            if(j != rank) {
+                MPI_Isend(temp_suspect_set[suspector], size, MPI_INT, j, suspector, MPI_COMM_WORLD, &req);
+            }
+        }
+    }
+
+    message = convertSetToArray(byz_set);
     for(int i = 0; i < size; i++) {
         if(i != rank) {
-          MPI_Isend(message, (size+1)*size, MPI_INT, i, round, MPI_COMM_WORLD, &req);
+          MPI_Isend(message, size, MPI_INT, i, size+1, MPI_COMM_WORLD, &req);
         }
     }
 
@@ -302,28 +344,32 @@ int initRoundR(int round) {
     MPI_Barrier(MPI_COMM_WORLD);
 
 
-    int **new_suspect_set;
-    new_suspect_set = new int*[size];
     map<int, int > reported;
-    int **recd_msg;
-    recd_msg = new int*[size+1];
-    for(int i = 0; i < size; i++) {
-        if(i != rank) {
-            MPI_Irecv(recd_msg, (size+1)*size, MPI_INT, i, round, MPI_COMM_WORLD, &req);
-        } else {
-            recd_msg = message;
-        }
-        int equality;
-        for (int reporting_node = 0; reporting_node < size; reporting_node++) {
-            equality = addToEchoesCheck(i, reporting_node, recd_msg[reporting_node]);
+    int *recd_msg;
+    for (int reporting_node = 0; reporting_node < size; reporting_node++) {
+        for(int i = 0; i < size; i++) {
+            if(i != rank) {
+                recd_msg = new int[size];
+                MPI_Irecv(recd_msg, size, MPI_INT, i, reporting_node, MPI_COMM_WORLD, &req);
+            } else {
+                recd_msg = temp_suspect_set[reporting_node];
+            }
+            int equality = addToEchoesCheck(i, reporting_node, recd_msg);
             if(equality) {
                 reported[reporting_node]++;
             }
         }
-        new_suspect_set[i] = recd_msg[size];
-        addToSuspects(i, new_suspect_set[i]);
     }
-    temp_suspect_set = new_suspect_set;
+    for(int i = 0; i < size; i++) {
+        if(i != rank) {
+            recd_msg = new int[size];
+            MPI_Irecv(recd_msg, size, MPI_INT, i, size+1, MPI_COMM_WORLD, &req);
+        } else {
+            recd_msg = message;
+        }
+        temp_suspect_set[i] = recd_msg;
+        addToSuspects(i, temp_suspect_set[i]);
+    }
 
     for(map<int, int>::iterator it_reported = reported.begin(); it_reported != reported.end(); it_reported++) {
         if(it_reported->second < size - num_failures) {
@@ -335,14 +381,16 @@ int initRoundR(int round) {
 int find(int i, vector<int> label) {
     for(vector<int>::iterator it_label = label.begin(); it_label != label.end(); it_label++) {
         if(*it_label == i)
-            return 0;
+            return 1;
     }
-    return 1;
+    return 0;
 }
 
 int getCVal(vector<int> label, int level) {
     if(level == 2) {
         Node *parent = root->children[label[0]];
+        //if(rank == 0)
+        //    printf("Returning at Level 2 CVal %d for child %d, %d\n", parent->children[label[1]]->cval, label[0], label[1]);
         return parent->children[label[1]]->cval;
     } else {
         int j = label[label.size()-3];
@@ -365,26 +413,28 @@ int getNewVal(vector<int> label, int level) {
                 return 1;
             }
         }
-    }
-    int count = 0;
-    map<int, int> cval_count;
-    for (int i = 0; i < size; i++) {
-        vector<int> childLabel = label;
-        if(!find(i, label)) {
+    } else {
+        int count = 0;
+        map<int, int> cval_count;
+        for (int i = 0; i < size; i++) {
+            vector<int> childLabel = label;
+            if(!find(i, label)) {
                 childLabel.push_back(i);
-            if(getNewVal(childLabel, level+1) == 1) {
-                cval_count[getCVal(childLabel, level+1)]++;
-                count++;
+                if(getNewVal(childLabel, level+1) == 1) {
+                    cval_count[getCVal(childLabel, level+1)]++;
+                    count++;
+                }
+                childLabel.pop_back();
             }
         }
-    }
-    if(count >= size - num_failures - level){
-        int cval = -1;
-        for(map<int, int>::iterator it_cval = cval_count.begin(); it_cval != cval_count.end(); it_cval++) {
-            if(it_cval->second > count/2)
-                cval = it_cval->first;
+        if(count >= size - num_failures - level){
+            int cval = -1;
+            for(map<int, int>::iterator it_cval = cval_count.begin(); it_cval != cval_count.end(); it_cval++) {
+                if(it_cval->second > count/2)
+                    cval = it_cval->first;
+            }
+            return cval;
         }
-        return cval;
     }
     return -1;
 }
@@ -399,6 +449,8 @@ int extractDecision() {
         newValCount[newval]++;
     }
     for(map<int, int>::iterator count = newValCount.begin(); count != newValCount.end(); count++) {
+        if(rank == 0)
+            printf("Count for value %d is %d\n", count->first, count->second);
         if(count->second > size/2) {
             return count->first;
         }
@@ -408,14 +460,22 @@ int extractDecision() {
 
 int convertToSet() {
     for(int i = 0; i < size; i++) {
-        set<int> mapped_set;
+        set<int> *mapped_set = new set<int>;
         for(int j = 0; j < size; j++) {
             if (temp_suspect_set[i][j] == 1)
-                mapped_set.insert(j);
+                mapped_set->insert(j);
         }
-        my_suspect_set[i] = mapped_set;
+        my_suspect_set[i] = *mapped_set;
     }
     return 1;
+}
+
+void pretty_print() {
+    if (rank == 0) {
+        printf("My byzantine suspects are: \n");
+        for(set<int>::iterator it=byz_set.begin(); it != byz_set.end(); it++)
+                printf("%d\n", *it);
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -435,18 +495,19 @@ int main(int argc, char *argv[]) {
 
     // assigns to gstring one of the two argument gstrings passed randomly
     setMyValue();
-    printf("Hello, world! "
-            "from process %d of %d, my value is %d\n", rank, size, myvalue);
     root = new Node();
     root->level = 0;
     root->val = -1;
 
-    if (rank >= size - num_failures) {
+    if (rank >= size - num_failures + 1) {
         byzantine = 1;
         second_value = (myvalue + 1) % MAX;
     } else {
         byzantine = 0;
     }
+
+    printf("Hello, world! "
+            "from process %d of %d, my value is %d and I am %d byzantine\n", rank, size, myvalue, byzantine);
 
 
     //----------------FIRST ROUND----------------------
@@ -476,6 +537,11 @@ int main(int argc, char *argv[]) {
         // To ensure all nodes have completed the push phase
         MPI_Barrier(MPI_COMM_WORLD);
     }
+
+    pretty_print();
+
+    int final_value = extractDecision();
+    printf("My %d final value is %d\n", rank, final_value);
 
     MPI_Finalize();
 

@@ -27,6 +27,8 @@ int size;
 int gstring = 0;
 
 int has_decided = 0;
+int number_of_messages;
+int number_of_bits;
 
 map<int, int> rand_strings;
 
@@ -38,10 +40,10 @@ map<int, int> rand_strings;
 //       6 - Answer
 
 // stores the gstring - the value agreed upon by majority of nodes
-int getRandBit() {
+int getRandBit(int num) {
     sleep(rank*2);
     srand(time(NULL));
-    return rand() % 2;
+    return rand() % num;
 }
 
 // generates all bit strings of length 'size'
@@ -57,12 +59,12 @@ vector<int> generateAllStrings(int size) {
         }
         prev_length = all_strings.size();
     }
-    if (rank == 0) {
-        printf("All strings are size:%d\n", all_strings.size());
-        for(int i = 0; i < prev_length; i++) {
-            printf("%d\n", all_strings[i]);
-        }
-    }
+    //if (rank == 0) {
+    //    printf("All strings are size:%d\n", int(all_strings.size()));
+    //    for(int i = 0; i < prev_length; i++) {
+    //        printf("%d\n", all_strings[i]);
+    //    }
+    //}
     return all_strings;
 }
 
@@ -70,11 +72,15 @@ vector<int> generateAllStrings(int size) {
 // returns the pull quorum determined by a function H
 set<int>* getPullQuorum(int candString, int id, int size) {
     set<int>* pullQuorum = new set<int>;
-    int i, member;
+    int i, member = (candString*id) + (size*2/3) - 1;
     for (i = 0; i < quorum_size; i++) {
-        member = ((candString*id) + (size*2/3) + i) % size;
+        member = (member + 1) % size;
         if (member != id) {
             pullQuorum->insert(member);
+        } else {
+            member = (member + 1) % size;
+            if (member != id)
+                pullQuorum->insert(member);
         }
     }
     return pullQuorum;
@@ -83,11 +89,15 @@ set<int>* getPullQuorum(int candString, int id, int size) {
 // returns the push quorum determined by a function I
 set<int>* getPushQuorum(int candString, int id, int size) {
     set<int>* pushQuorum = new set<int>;
-    int i, member;
+    int i, member = (candString*id) + (size*2/3) - 1;
     for (i = 0; i < quorum_size; i++) {
-        member = ((candString*id) + (size*2/3) + i) % size;
+        member = (member + 1) % size;
         if (member != id) {
             pushQuorum->insert(member);
+        } else {
+            member = (member + 1) % size;
+            if (member != id)
+                pushQuorum->insert(member);
         }
     }
     return pushQuorum;
@@ -96,11 +106,15 @@ set<int>* getPushQuorum(int candString, int id, int size) {
 // returns the push quorum determined by a function J
 set<int>* getPollList(int candString, int id, int size) {
     set<int>* pollList = new set<int>;
-    int i, member;
+    int i, member = (candString*id) + (size*2/3) - 1;
     for (i = 0; i < quorum_size; i++) {
-        member = ((candString*id) + (size*2/3) + i) % size;
+        member = (member + 1) % size;
         if (member != id) {
             pollList->insert(member);
+        } else {
+            member = (member + 1) % size;
+            if (member != id)
+                pollList->insert(member);
         }
     }
     return pollList;
@@ -117,7 +131,7 @@ vector<int>* pushPhase() {
     for (i = 0; i < size; i++) {
         pushQuorum = getPushQuorum(gstring, i, size);
         if (pushQuorum->find(rank) != pushQuorum->end()) {
-          printf("I %d am SENDING to %d\n", rank, i);
+          //printf("I %d am SENDING to %d\n", rank, i);
           MPI_Isend(&gstring, 1, MPI_INT, i, 1, MPI_COMM_WORLD, &req);
         }
     }
@@ -135,9 +149,12 @@ vector<int>* pushPhase() {
         int cand_string = 0;
         MPI_Irecv(&cand_string, 1, MPI_INT, i, 1, MPI_COMM_WORLD, &req);
         while (cand_string != 0) {
-            printf("%d RECIEVED from process %d, string is %d\n", rank, i, cand_string);
+            //if(rank == 0)
+            //    printf("%d RECIEVED from process %d, string is %d\n", rank, i, cand_string);
             pushQuorum = getPushQuorum(cand_string, rank, size);
             if (pushQuorum->find(i) != pushQuorum->end()) {
+	  	number_of_messages++;
+	  	number_of_bits++;
                 all_strings[cand_string]++;
             }
             cand_string = 0;
@@ -151,6 +168,8 @@ vector<int>* pushPhase() {
             mapIt != all_strings.end(); mapIt++) {
         if (mapIt->second > quorum_size/2) {
             candidates->push_back(mapIt->first);
+            //if(rank == 0)
+            //    printf("%d's candidate list includes %d\n", rank, mapIt->first);
         }
     }
     return candidates;
@@ -166,7 +185,7 @@ int sendPullRequests(vector<int> *candidates) {
     MPI_Request req;
     for (vector<int>::iterator candIt = candidates->begin();
             candIt != candidates->end(); candIt++) {
-        r = rand() % num;
+        r = getRandBit(num);
         rxs = all_strings[r];
         rand_strings[*candIt] = rxs;
         pollList = getPollList(rxs, rank, size);
@@ -174,13 +193,19 @@ int sendPullRequests(vector<int> *candidates) {
         for (set<int>::iterator pollIt = pollList->begin();
                 pollIt != pollList->end(); pollIt++) {
             MPI_Isend(message, 2, MPI_INT, *pollIt, 5, MPI_COMM_WORLD, &req);
-            printf("PULL PHASE POLL: I %d am SENDING to %d: message %d,%d\n", rank, *pollIt, *candIt, rxs);
+	    number_of_messages++;
+	    number_of_bits += 2;
+            //if(*pollIt == 0)
+            //    printf("PULL PHASE POLL: I %d am SENDING to %d: message %d,%d\n", rank, *pollIt, *candIt, rxs);
         }
         pullQuorum = getPullQuorum(*candIt, rank, size);
         for (set<int>::iterator pullIt = pullQuorum->begin();
                 pullIt != pullQuorum->end(); pullIt++) {
             MPI_Isend(message, 2, MPI_INT, *pullIt, 2, MPI_COMM_WORLD, &req);
-            printf("PULL PHASE PULL: I %d am SENDING to %d: message %d,%d\n", rank, *pullIt, *candIt,rxs);
+	    number_of_messages++;
+	    number_of_bits += 2;
+            //if(*pullIt == 0)
+            //    printf("PULL PHASE PULL: I %d am SENDING to %d: message %d,%d\n", rank, *pullIt, *candIt,rxs);
         }
     }
     return 1;
@@ -198,9 +223,11 @@ int routingPullRequests() {
         MPI_Irecv(recd_string, 2, MPI_INT, i, 2, MPI_COMM_WORLD, &req);
         while (recd_string[0] != -1) {
             pullQuorum = getPullQuorum(gstring, i, size);
-            printf("PULL PHASE routing: I %d am RECEIVING from %d: message %d,%d\n", rank, i, recd_string[0], recd_string[1]);
+            //if(rank == 0)
+            //    printf("PULL PHASE routing: I %d am RECEIVING from %d: message %d,%d\n", rank, i, recd_string[0], recd_string[1]);
             if (recd_string[0] == gstring && pullQuorum->find(rank) != pullQuorum->end()) {
-                printf("PULL PHASE routing AFTER: I %d am RECEIVING from %d: message %d\n", rank, i, recd_string[0]);
+                //if(rank == 0)
+                //    printf("PULL PHASE routing AFTER: I %d am RECEIVING from %d: message %d, %d\n", rank, i, recd_string[0], recd_string[1]);
                 pollList = getPollList(recd_string[1], i, size);
                 set<int> *pullQW;
                 for (set<int>::iterator pollIt = pollList->begin();
@@ -210,6 +237,10 @@ int routingPullRequests() {
                     for (set<int>::iterator pullIt = pullQW->begin();
                             pullIt != pullQW->end(); pullIt++) {
                         MPI_Isend(message, 4, MPI_INT, *pullIt, 3, MPI_COMM_WORLD, &req);
+	    		number_of_messages++;
+	    		number_of_bits += 4;
+                        //if(*pullIt == 0)
+                        //    printf("PULL PHASE sending FW1: I %d am sending to %d: message %d, %d, %d, %d\n", rank, *pullIt, i, gstring, recd_string[1], *pollIt);
                     }
                 }
             }
@@ -231,6 +262,8 @@ int routingPullRequests() {
         recd_string[0] = -1;
         MPI_Irecv(recd_string, 4, MPI_INT, i, 3, MPI_COMM_WORLD, &req);
         while (recd_string[0] != -1) {
+            //if(rank == 0)
+            //    printf("PULL PHASE RECEIVING FW1: I %d am RECEIVING from %d: message %d,%d, %d, %d\n", rank, i, recd_string[0], recd_string[1], recd_string[2], recd_string[3]);
             pullQW = getPullQuorum(gstring, recd_string[3], size);
             pullQX = getPullQuorum(gstring, recd_string[0], size);
             pollQX = getPollList(recd_string[2], recd_string[0], size);
@@ -241,6 +274,10 @@ int routingPullRequests() {
                 if (fwcount[make_pair(gstring, recd_string[0])] > pullQX->size()/2) {
                     int message[3] = {recd_string[0], recd_string[1], recd_string[2]};
                     MPI_Isend(message, 3, MPI_INT, recd_string[3], 4, MPI_COMM_WORLD, &req);
+	    	    number_of_messages++;
+	    	    number_of_bits += 3;
+                    //if(recd_string[3] == 0)
+                    //    printf("PULL PHASE sending FW2: I %d am sending to %d: message %d, %d, %d\n", rank, recd_string[3], message[0], message[1], message[2]);
                     fwcount[make_pair(gstring, recd_string[0])] = -100000;
 
                 }
@@ -268,9 +305,12 @@ int answerPullRequests() {
         recd_msg[0] = -1;
         MPI_Irecv(recd_msg, 3, MPI_INT, i, 4, MPI_COMM_WORLD, &req);
         while (recd_msg[0] != -1) {
+            //if(rank == 0)
+            //    printf("PULL PHASE RECEIVING FW2: I %d am RECEIVING from %d: message %d,%d, %d\n", rank, i, recd_msg[0], recd_msg[1], recd_msg[2]);
             if (count.find(recd_msg[1]) != count.end()) {
                 if (count[recd_msg[1]] > log2(size)*log2(size)) {
                     //wait for has_decided
+                    while(!has_decided);
                 }
             }
             pullQuorum = getPullQuorum(gstring, rank, size);
@@ -282,6 +322,10 @@ int answerPullRequests() {
                         polled.find(make_pair(recd_msg[0], gstring)) != polled.end()) {
                     count[recd_msg[1]]++;
                     MPI_Isend(&gstring, 1, MPI_INT, recd_msg[0], 6, MPI_COMM_WORLD, &req);
+	    	    number_of_messages++;
+	    	    number_of_bits += 1;
+                    if(recd_msg[0] == 0)
+                        printf("PULL PHASE sending ANSWER: I %d am sending to %d: message %d\n", rank, recd_msg[0], gstring);
                     fw2count[make_pair(gstring, recd_msg[0])] = -100000;
                 }
             }
@@ -295,6 +339,8 @@ int answerPullRequests() {
         recd_msg[0] = -1;
         MPI_Irecv(recd_msg, 2, MPI_INT, i, 5, MPI_COMM_WORLD, &req);
         while (recd_msg[0] != -1) {
+            //if(rank == 0)
+            //    printf("PULL PHASE ANSWERING POLL: I %d am RECEIVING from %d: message %d,%d\n", rank, i, recd_msg[0], recd_msg[1]);
             pullQuorum = getPullQuorum(recd_msg[0], rank, size);
             pollQX = getPollList(recd_msg[1], i, size);
             if (pollQX->find(rank) != pollQX->end()) {
@@ -302,6 +348,10 @@ int answerPullRequests() {
                 if (fw2count[make_pair(recd_msg[0], i)] > pullQuorum->size()/2) {
                     count[recd_msg[0]]++;
                     MPI_Isend(&recd_msg[0], 1, MPI_INT, i, 6, MPI_COMM_WORLD, &req);
+	    	    number_of_messages++;
+	    	    number_of_bits += 1;
+                    if(i == 0)
+                        printf("PULL PHASE sending ANSWER: I %d am sending to %d: message %d\n", rank, i, recd_msg[0]);
                     fw2count[make_pair(recd_msg[0], i)] = -100000;
                 }
             }
@@ -325,9 +375,12 @@ int processAnswers() {
         MPI_Irecv(&recd_msg, 1, MPI_INT, i, 6, MPI_COMM_WORLD, &req);
         while (recd_msg != -1) {
             pollQX = getPollList(rand_strings[recd_msg], rank, size);
+            if(rank == 0)
+                printf("PULL PHASE RECEIVING ANSWER: I %d am receiving from %d: message %d\n", rank, i, recd_msg);
             if (pollQX->find(i) != pollQX->end() && sentAnswer[i].find(recd_msg) == sentAnswer[i].end()) {
                 count[recd_msg]++;
                 if(count[recd_msg] > pollQX->size()/2) {
+		    printf("I am deciding\n");
                     has_decided = 1;
                     gstring = recd_msg;
                     return recd_msg;
@@ -367,8 +420,11 @@ int main(int argc, char *argv[]) {
     // quorum_size is log of total number of nodes
     quorum_size = log2(size);
 
+    number_of_messages = 0;
+    number_of_bits = 0;
+
     // assigns to gstring one of the two argument gstrings passed randomly
-    if (getRandBit()) {
+    if (getRandBit(2)) {
         for (i = 0; i < quorum_size; i++) {
             gstring = gstring*10 + (argv[1][i] - '0');
         }
@@ -390,8 +446,26 @@ int main(int argc, char *argv[]) {
     int final_string = pullPhase(candidates);
     printf("My %d final value is %d\n", rank, final_string);
 
+    int *msg_per_node;
+    int *bit_per_node;
+    if(rank == 0) {
+	msg_per_node = new int[size];
+	bit_per_node = new int[size];
+    }
+    printf("%d's total messages = %d\n", rank, number_of_messages);
+    MPI_Gather(&number_of_messages, 1, MPI_INT, msg_per_node, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Gather(&number_of_bits, 1, MPI_INT, bit_per_node, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    int total_messages = 0;
+    int total_bits = 0;
+    if(rank == 0) {
+	for(int i = 0; i < size; i++) {
+	    total_messages += msg_per_node[i];
+	    total_bits += bit_per_node[i];
+	}
+	printf("Total number of messages = %d \n Total number of bits = %d\n", total_messages, total_bits);
+    }
 
     MPI_Finalize();
 
-    return(0);
+    return(1);
 }

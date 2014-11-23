@@ -19,22 +19,6 @@
 #define MAX 2
 
 using namespace std;
-using std::vector;
-using std::ostream;
-
-template<typename T>
-ostream& operator<< (ostream& out, const vector<T>& v) {
-        out << "[";
-            size_t last = v.size() - 1;
-                for(size_t i = 0; i < v.size(); ++i) {
-                            out << v[i];
-                                    if (i != last) 
-                                                    out << ", ";
-                                        }
-                    out << "]";
-                        return out;
-}
-
 
 // stores the value log(size)
 int quorum_size;
@@ -52,6 +36,8 @@ int default_value = 1;
 
 int byzantine;
 int second_value;
+int number_of_messages;
+int number_of_bits;
 
 class Node {
  public:
@@ -88,14 +74,18 @@ int setMyValue() {
 int initFirstRound() {
     //cout<<"Initiating first round\n";
     MPI_Request req;
+    MPI_Status stats;
     for(int i = 0; i < size; i++) {
         if(i != rank) {
             if(!byzantine) {
-                MPI_Isend(&myvalue, 1, MPI_INT, i, 1, MPI_COMM_WORLD, &req);
+                MPI_Send(&myvalue, 1, MPI_INT, i, 1, MPI_COMM_WORLD);
             } else if(i <= size/2) {
-                MPI_Isend(&myvalue, 1, MPI_INT, i, 1, MPI_COMM_WORLD, &req);
-            } else
-                MPI_Isend(&second_value, 1, MPI_INT, i, 1, MPI_COMM_WORLD, &req);
+                MPI_Send(&myvalue, 1, MPI_INT, i, 1, MPI_COMM_WORLD);
+            } else {
+                MPI_Send(&second_value, 1, MPI_INT, i, 1, MPI_COMM_WORLD);
+            }
+	    	number_of_messages++;
+	    	number_of_bits += 1;
         }
     }
 
@@ -115,9 +105,9 @@ int initFirstRound() {
             newChild->val = myvalue;
         else
             newChild->val = recd_msg;
-        //printf("I %d received value %d from process %d\n", rank, newChild->val, i);
+        printf("I %d received value %d from process %d\n", rank, newChild->val, i);
     }
-    //cout<<"Completing first round\n";
+    cout<<"Completing first round\n";
     return 1;
 }
 
@@ -128,13 +118,16 @@ int initSecondRound() {
     for(vector<Node*>::iterator it = root->children.begin();
             it != root->children.end(); it++) {
         message[*((*it)->label)] = (*it)->val;
-        //if(rank == 0)
-        //    printf("sending value %d from process %d, %d\n", (*it)->val, *((*it)->label), rank);
+        if(rank == 0)
+            printf("sending value %d from process %d, %d\n", (*it)->val, *((*it)->label), rank);
     }
 
+    MPI_Status stats;
     for(int i = 0; i < size; i++) {
         if(i != rank) {
-            MPI_Isend(message, size, MPI_INT, i, 2, MPI_COMM_WORLD, &req);
+            MPI_Send(message, size, MPI_INT, i, 2, MPI_COMM_WORLD);
+	    	number_of_messages++;
+	    	number_of_bits += size;
         }
     }
 
@@ -171,6 +164,7 @@ int initSecondRound() {
                 //    printf("I %d setting value %d received for child %d,%d\n", rank, recd_msg[next_recd_val], *((*it)->label), i);
             }
         }
+	delete[] recd_msg;
     }
     int count = 0;
     for(vector<Node*>::iterator it_parent = root->children.begin();
@@ -227,6 +221,7 @@ int initThirdRound() {
     int **msg = new int*[size];
     int *message;
     int node_num = 0;
+    MPI_Status stats;
     for(vector<Node*>::iterator it_parent = root->children.begin();
             it_parent != root->children.end(); it_parent++) {
         node_num = *((*it_parent)->label);
@@ -238,7 +233,9 @@ int initThirdRound() {
         msg[node_num] = message;
         for(int i = 0; i < size; i++) {
             if(i != rank) {
-              MPI_Isend(message, size, MPI_INT, i, node_num, MPI_COMM_WORLD, &req);
+                MPI_Send(message, size, MPI_INT, i, node_num, MPI_COMM_WORLD);
+	    	    number_of_messages++;
+	    	    number_of_bits += size;
             }
         }
     }
@@ -253,7 +250,9 @@ int initThirdRound() {
 
     for(int i = 0; i < size; i++) {
         if(i != rank) {
-          MPI_Isend(message, size, MPI_INT, i, size+1, MPI_COMM_WORLD, &req);
+            MPI_Send(message, size, MPI_INT, i, size+1, MPI_COMM_WORLD);
+	    	number_of_messages++;
+	    	number_of_bits += size;
         }
     }
 
@@ -293,6 +292,7 @@ int initThirdRound() {
                         (*it_child)->count++;
                 }
             }
+	    delete[] recd_msg;
         }
     }
     for(int i = 0; i < size; i++) {
@@ -302,6 +302,7 @@ int initThirdRound() {
         } else {
             recd_msg = message;
         }
+	delete[] temp_suspect_set[i];
         temp_suspect_set[i] = recd_msg;
         addToSuspects(i, temp_suspect_set[i]);
     }
@@ -325,18 +326,25 @@ int initRoundR(int round) {
     printf("Initiating round %d\n", round);
     int *message;
 
+    MPI_Status stats;
     for(int suspector = 0; suspector < size; suspector++) {
-        for(int j = 0; j < size; j++) {
-            if(j != rank) {
-                MPI_Isend(temp_suspect_set[suspector], size, MPI_INT, j, suspector, MPI_COMM_WORLD, &req);
+	if(rank != suspector) {
+            for(int j = 0; j < size; j++) {
+                if(j != rank && suspector != j) {
+       	            MPI_Send(temp_suspect_set[suspector], size, MPI_INT, j, suspector, MPI_COMM_WORLD);
+		            number_of_messages++;
+		            number_of_bits += size;
+        	    }
             }
-        }
+	}
     }
 
     message = convertSetToArray(byz_set);
     for(int i = 0; i < size; i++) {
         if(i != rank) {
-          MPI_Isend(message, size, MPI_INT, i, size+1, MPI_COMM_WORLD, &req);
+            MPI_Send(message, size, MPI_INT, i, size+1, MPI_COMM_WORLD);
+	    	number_of_messages++;
+	    	number_of_bits += size;
         }
     }
 
@@ -347,18 +355,21 @@ int initRoundR(int round) {
     map<int, int > reported;
     int *recd_msg;
     for (int reporting_node = 0; reporting_node < size; reporting_node++) {
-        for(int i = 0; i < size; i++) {
-            if(i != rank) {
-                recd_msg = new int[size];
-                MPI_Irecv(recd_msg, size, MPI_INT, i, reporting_node, MPI_COMM_WORLD, &req);
-            } else {
-                recd_msg = temp_suspect_set[reporting_node];
+	if(rank != reporting_node) {
+            for(int i = 0; i < size; i++) {
+                if(i != rank) {
+                    recd_msg = new int[size];
+                    MPI_Irecv(recd_msg, size, MPI_INT, i, reporting_node, MPI_COMM_WORLD, &req);
+                } else {
+                    recd_msg = temp_suspect_set[reporting_node];
+                }
+                int equality = addToEchoesCheck(i, reporting_node, recd_msg);
+                if(equality) {
+                    reported[reporting_node]++;
+                }
+	        delete[] recd_msg;
             }
-            int equality = addToEchoesCheck(i, reporting_node, recd_msg);
-            if(equality) {
-                reported[reporting_node]++;
-            }
-        }
+	}
     }
     for(int i = 0; i < size; i++) {
         if(i != rank) {
@@ -367,6 +378,7 @@ int initRoundR(int round) {
         } else {
             recd_msg = message;
         }
+	delete[] temp_suspect_set[i];
         temp_suspect_set[i] = recd_msg;
         addToSuspects(i, temp_suspect_set[i]);
     }
@@ -376,6 +388,7 @@ int initRoundR(int round) {
                 byz_set.insert(it_reported->first);
         }
     }
+    printf("Completing round %d\n", round);
     return 1;
 }
 int find(int i, vector<int> label) {
@@ -389,9 +402,10 @@ int find(int i, vector<int> label) {
 int getCVal(vector<int> label, int level) {
     if(level == 2) {
         Node *parent = root->children[label[0]];
-        //if(rank == 0)
-        //    printf("Returning at Level 2 CVal %d for child %d, %d\n", parent->children[label[1]]->cval, label[0], label[1]);
-        return parent->children[label[1]]->cval;
+        if(label[1] > label[0])
+            return parent->children[label[1]-1]->cval;
+        else
+            return parent->children[label[1]]->cval;
     } else {
         int j = label[label.size()-3];
         int k = label[label.size()-2];
@@ -404,6 +418,11 @@ int getCVal(vector<int> label, int level) {
 
 int getNewVal(vector<int> label, int level) {
     if(level == num_failures + 1) {
+        if(num_failures == 0)
+            return root->children[label[0]]->val;
+        if(num_failures == 1) {
+            return 1;
+        }
         if (label.size() >= 2) {
             int l = label[label.size()-1];
             int k = label[label.size()-2];
@@ -449,8 +468,6 @@ int extractDecision() {
         newValCount[newval]++;
     }
     for(map<int, int>::iterator count = newValCount.begin(); count != newValCount.end(); count++) {
-        if(rank == 0)
-            printf("Count for value %d is %d\n", count->first, count->second);
         if(count->second > size/2) {
             return count->first;
         }
@@ -491,7 +508,10 @@ int main(int argc, char *argv[]) {
     quorum_size = log2(size);
 
     num_failures = (size/3) - 1;
+    num_failures = num_failures > 0? num_failures:0;
 
+    number_of_messages = 0;
+    number_of_bits = 0;
 
     // assigns to gstring one of the two argument gstrings passed randomly
     setMyValue();
@@ -499,7 +519,7 @@ int main(int argc, char *argv[]) {
     root->level = 0;
     root->val = -1;
 
-    if (rank >= size - num_failures + 1) {
+    if((rank % (size/num_failures) == 0) && rank != 0) {
         byzantine = 1;
         second_value = (myvalue + 1) % MAX;
     } else {
@@ -513,35 +533,73 @@ int main(int argc, char *argv[]) {
     //----------------FIRST ROUND----------------------
     initFirstRound();
 
-    // To ensure all nodes have completed the push phase
-    MPI_Barrier(MPI_COMM_WORLD);
-
     //----------------SECOND ROUND----------------------
     if (num_failures + 1 >= 2) {
         initSecondRound();
-        // To ensure all nodes have completed the push phase
-        MPI_Barrier(MPI_COMM_WORLD);
     }
 
     temp_suspect_set = new int*[size];
+    for(int i = 0; i < size; i++) {
+        temp_suspect_set[i] = new int[size];
+    }
 
     if (num_failures + 1 >= 3) {
         initThirdRound();
         convertToSet();
-        // To ensure all nodes have completed the push phase
-        MPI_Barrier(MPI_COMM_WORLD);
     }
 
     for(int round = 4; round <= num_failures + 1; round++) {
         initRoundR(round);
-        // To ensure all nodes have completed the push phase
-        MPI_Barrier(MPI_COMM_WORLD);
     }
 
     pretty_print();
 
     int final_value = extractDecision();
     printf("My %d final value is %d\n", rank, final_value);
+
+    int *msg_per_node;
+    int *bit_per_node;
+    int *value_per_node;
+    int *final_per_node;
+    if(rank == 0) {
+	    msg_per_node = new int[size];
+	    bit_per_node = new int[size];
+	    value_per_node = new int[size];
+	    final_per_node = new int[size];
+    }
+    printf("%d's total messages = %d\n", rank, number_of_messages);
+    MPI_Gather(&number_of_messages, 1, MPI_INT, msg_per_node, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Gather(&number_of_bits, 1, MPI_INT, bit_per_node, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Gather(&myvalue, 1, MPI_INT, value_per_node, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Gather(&final_value, 1, MPI_INT, final_per_node, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    int total_messages = 0;
+    int total_bits = 0;
+    int total_value1 = 0;
+    int total_value2 = 0;
+    int final_value1 = 0;
+    int final_value2 = 0;
+    int value1 = 3, value2 = 4;
+    if(rank == 0) {
+	    for(int i = 0; i < size; i++) {
+	        total_messages += msg_per_node[i];
+	        total_bits += bit_per_node[i];
+	        if(value_per_node[i] == value1)
+	    	    total_value1++;
+	        else
+	    	    total_value2++;
+	        if(final_per_node[i] == value1)
+	    	    final_value1++;
+	        else
+	    	    final_value2++;
+	    }
+	    printf("Total number of messages = %d \n Total number of bits = %d\n", total_messages, total_bits);
+	    printf("Total number of %d = %d \n Total number of %d = %d\n", value1, total_value1, value2, total_value2);
+	    printf("Total number of final %d = %d \n Total number of final %d = %d\n", value1, final_value1, value2, final_value2);
+    }
+	delete[] msg_per_node;
+	delete[] bit_per_node;
+	delete[] value_per_node;
+	delete[] final_per_node;
 
     MPI_Finalize();
 
